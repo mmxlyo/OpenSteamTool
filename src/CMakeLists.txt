@@ -201,35 +201,11 @@ add_library(xinput1_4 SHARED
 )
 
 # ---------------------------------------------------------------------------
-# ost-Injector — portable injector executable.
+# ost-Injector — portable injector executable (defined in tools/CMakeLists.txt).
+# Ensure ost-Injector is always built alongside OpenSteamTool.
 # ---------------------------------------------------------------------------
-add_executable(ost-Injector
-    Injector/Injector.cpp
-    Injector/Injector.h
-)
+if(TARGET ost-Injector)
+    add_dependencies(OpenSteamTool ost-Injector)
+endif()
 
-set_target_properties(ost-Injector PROPERTIES
-    OUTPUT_NAME "ost-Injector"
-)
-
-target_link_libraries(ost-Injector PRIVATE
-    kernel32
-    user32
-    advapi32
-    shell32
-)
-
-# Copy portable helper scripts and default config into the target output directory
-add_custom_command(TARGET ost-Injector POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/CreateAutoInjectTask.bat"
-        "$<TARGET_FILE_DIR:ost-Injector>/CreateAutoInjectTask.bat"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/DeleteAutoInjectTask.bat"
-        "$<TARGET_FILE_DIR:ost-Injector>/DeleteAutoInjectTask.bat"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/config.ini"
-        "$<TARGET_FILE_DIR:ost-Injector>/config.ini"
-    COMMENT "Copying portable injector scripts and config template"
-)
 

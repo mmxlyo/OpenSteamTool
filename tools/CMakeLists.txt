@@ -16,3 +16,36 @@ add_executable(extract_tickets
 )
 target_compile_features(extract_tickets PRIVATE cxx_std_20)
 
+if(WIN32)
+    add_executable(ost-Injector
+        Injector/Injector.cpp
+        Injector/Injector.h
+    )
+    target_compile_features(ost-Injector PRIVATE cxx_std_20)
+    set_target_properties(ost-Injector PROPERTIES
+        OUTPUT_NAME "ost-Injector"
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
+    )
+    target_link_libraries(ost-Injector PRIVATE
+        kernel32
+        user32
+        advapi32
+        shell32
+    )
+    add_custom_command(TARGET ost-Injector POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/CreateAutoInjectTask.bat"
+            "$<TARGET_FILE_DIR:ost-Injector>/CreateAutoInjectTask.bat"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/DeleteAutoInjectTask.bat"
+            "$<TARGET_FILE_DIR:ost-Injector>/DeleteAutoInjectTask.bat"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/config.ini"
+            "$<TARGET_FILE_DIR:ost-Injector>/config.ini"
+        COMMENT "Copying portable injector scripts and config template"
+    )
+endif()
+
