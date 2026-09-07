@@ -1,4 +1,5 @@
 #include "IPCLoader.h"
+#include "dllmain.h"
 #include "IPCMessages.gen.h"
 #include "OSTPlatform/include/Numbers.h"
 #include "Utils/Logging/Log.h"
@@ -138,6 +139,7 @@ namespace {
 
     static void ShowMissingPopup(const std::string& sha256)
     {
+        const std::string rootLabel = IsPortableMode() ? "<PortableDir>" : "<Steam>";
         SteamDiagnostics::ShowWarning(
             "OpenSteamTool - IPC spec missing",
             "OpenSteamTool: IPC spec file not found.\n\n"
@@ -146,7 +148,7 @@ namespace {
             "You can:\n"
             "  1. Wait for the next upstream publish and restart Steam.\n"
             "  2. Drop a matching TOML at:\n"
-            "       <Steam>\\opensteamtool\\ipc\\steamclient\\" + sha256 + ".toml\n"
+            "       " + rootLabel + "\\opensteamtool\\ipc\\steamclient\\" + sha256 + ".toml\n"
             "  3. Check upstream:\n"
             "       https://github.com/OpenSteam001/steam-monitor/tree/ipc/steamclient");
     }

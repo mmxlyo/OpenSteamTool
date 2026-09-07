@@ -51,12 +51,15 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
     }
     sprintf_s(ConfigPath, kRuntimePathCapacity, "%s", tomlPath.c_str());
 
-    std::string luaPath = (std::filesystem::path(DllDir) / "config" / "lua").string();
-    if (!std::filesystem::exists(luaPath)) {
-        std::string steamLua = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
-        if (std::filesystem::exists(steamLua) || dllPath.empty()) {
-            luaPath = steamLua;
-        }
+    std::string luaPath;
+    if (IsPortableMode()) {
+        luaPath = (std::filesystem::path(DllDir) / "config" / "lua").string();
+        std::error_code ec;
+        std::filesystem::create_directories(luaPath, ec);
+    } else {
+        luaPath = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
+        std::error_code ec;
+        std::filesystem::create_directories(luaPath, ec);
     }
     sprintf_s(LuaDir, kRuntimePathCapacity, "%s", luaPath.c_str());
 
@@ -105,8 +108,8 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     std::vector<std::string> watchDirs = Config::GetLuaPaths();
     watchDirs.push_back(std::string(LuaDir));
-    // If DllDir and SteamInstallPath are different, also watch Steam's config/lua if it exists
-    if (_stricmp(SteamInstallPath, DllDir) != 0) {
+    // In portable mode, also watch Steam's config/lua if it already exists
+    if (IsPortableMode()) {
         std::string steamLua = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
         if (std::filesystem::exists(steamLua) && steamLua != std::string(LuaDir)) {
             watchDirs.push_back(steamLua);

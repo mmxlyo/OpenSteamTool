@@ -39,8 +39,13 @@ namespace {
 
     Snapshot MakeDefaultSnapshot(const std::string& configPath) {
         Snapshot snapshot;
-        std::filesystem::path p(configPath);
-        snapshot.logDir = (p.parent_path() / "opensteamtool").string();
+        const char* storageDir = GetStorageDirectory();
+        if (storageDir && storageDir[0] != '\0') {
+            snapshot.logDir = (std::filesystem::path(storageDir) / "opensteamtool").string();
+        } else {
+            std::filesystem::path p(configPath);
+            snapshot.logDir = (p.parent_path() / "opensteamtool").string();
+        }
         return snapshot;
     }
 
@@ -119,6 +124,19 @@ namespace {
                     else if (*val == "info")        snapshot.logLevel = LogLevel::Info;
                     else if (*val == "warn")        snapshot.logLevel = LogLevel::Warn;
                     else if (*val == "error")       snapshot.logLevel = LogLevel::Error;
+                }
+                if (auto val = (*log)["dir"].value<std::string>()) {
+                    std::filesystem::path p(*val);
+                    if (p.is_relative()) {
+                        const char* storageDir = GetStorageDirectory();
+                        if (storageDir && storageDir[0] != '\0') {
+                            snapshot.logDir = (std::filesystem::path(storageDir) / p).string();
+                        } else {
+                            snapshot.logDir = (std::filesystem::path(configPath).parent_path() / p).string();
+                        }
+                    } else {
+                        snapshot.logDir = *val;
+                    }
                 }
             }
 

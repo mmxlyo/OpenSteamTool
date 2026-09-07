@@ -1,4 +1,5 @@
 #include "RemoteToml.h"
+#include "dllmain.h"
 #include "OSTPlatform/include/Http.h"
 #include "Utils/Config/Config.h"
 #include "Utils/Logging/Log.h"
@@ -90,7 +91,11 @@ Result Fetch(const Request& request)
 
     // 2. Cache path & dir.
     fs::path steamRoot = fs::path(request.dllPath).parent_path();
-    fs::path cacheDir  = steamRoot / "opensteamtool" / request.channel / request.component;
+    fs::path baseDir = GetStorageDirectory();
+    if (baseDir.empty()) {
+        baseDir = steamRoot;
+    }
+    fs::path cacheDir  = baseDir / "opensteamtool" / request.channel / request.component;
     fs::path cachePath = cacheDir / (out.sha256 + ".toml");
     const std::string cachePathText = cachePath.string();
 
@@ -146,13 +151,21 @@ Result Fetch(const Request& request)
     }
 
     // 5. Remote failed → fall back to whatever is cached for this exact SHA.
-    if (fs::exists(cachePath)) {
+    fs::path fallbackPath = cachePath;
+    if (!fs::exists(fallbackPath) && IsPortableMode()) {
+        fs::path steamCachePath = steamRoot / "opensteamtool" / request.channel / request.component / (out.sha256 + ".toml");
+        if (fs::exists(steamCachePath)) {
+            fallbackPath = steamCachePath;
+        }
+    }
+
+    if (fs::exists(fallbackPath)) {
         LOG_WARN("RemoteToml({}/{}): remote failed (last URL {} HTTP {}); "
                  "falling back to local cache {}",
                  request.channel, request.component,
-                 lastUrl.empty() ? "<none>" : lastUrl, http.status, cachePathText);
+                 lastUrl.empty() ? "<none>" : lastUrl, http.status, fallbackPath.string());
 
-        std::ifstream ifs(cachePath, std::ios::binary);
+        std::ifstream ifs(fallbackPath, std::ios::binary);
         if (ifs) {
             std::string buf((std::istreambuf_iterator<char>(ifs)),
                              std::istreambuf_iterator<char>());
@@ -163,10 +176,10 @@ Result Fetch(const Request& request)
                 return out;
             }
             LOG_WARN("RemoteToml({}/{}): cache file empty: {}",
-                     request.channel, request.component, cachePathText);
+                     request.channel, request.component, fallbackPath.string());
         } else {
             LOG_WARN("RemoteToml({}/{}): could not open cache file: {}",
-                     request.channel, request.component, cachePathText);
+                     request.channel, request.component, fallbackPath.string());
         }
     }
 

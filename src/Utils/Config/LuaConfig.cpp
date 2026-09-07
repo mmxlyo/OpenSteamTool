@@ -748,8 +748,6 @@ namespace LuaConfig{
         std::vector<std::string> files;
 
         std::error_code ec;
-        if (!std::filesystem::exists(directory, ec))
-            std::filesystem::create_directories(directory, ec);
         if (!std::filesystem::exists(directory, ec) || !std::filesystem::is_directory(directory, ec))
             return files;
 
