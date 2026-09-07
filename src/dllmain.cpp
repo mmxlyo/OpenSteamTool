@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #include "dllmain.h"
 #include "Hook/HookManager.h"
 #include "Utils/Config/ConfigFileWatcher.h"
@@ -138,6 +139,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     if (dwReason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(hModule);
+
+        // Keep this module pinned so explicit FreeLibrary cannot unload code
+        // while hooks and worker threads may still reference it.
+        HMODULE pinnedModule = nullptr;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCSTR>(&DllMain), &pinnedModule);
+
         // Hand off all real work to a worker thread to avoid running file I/O,
         // module loading and detour transactions under the loader lock.
         OSTPlatform::Thread::StartDetached([module = reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(hModule)] {
@@ -146,11 +155,18 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     }
     else if (dwReason == DLL_PROCESS_DETACH)
     {
-        ConfigFileWatcher::Stop();
-        LuaFileWatcher::Stop();
-        SteamUI::CoreUnhook();
-        SteamClient::CoreUnhook();
-        CloudRedirectHost::Shutdown();
+        // During process termination (pvReserved != nullptr), avoid loader-lock work in
+        // unhooks; only stop file watchers to ensure clean thread termination.
+        if (pvReserved != nullptr) {
+            ConfigFileWatcher::Stop();
+            LuaFileWatcher::Stop();
+        } else {
+            ConfigFileWatcher::Stop();
+            LuaFileWatcher::Stop();
+            SteamUI::CoreUnhook();
+            SteamClient::CoreUnhook();
+            CloudRedirectHost::Shutdown();
+        }
     }
 
     return TRUE;
