@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 #include "dllmain.h"
 #include "Hook/HookManager.h"
 #include "Utils/Config/ConfigFileWatcher.h"
