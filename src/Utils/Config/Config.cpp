@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "dllmain.h"
 #include "Utils/Logging/Log.h"
 #include "Utils/SteamMetadata/ManifestClient.h"
 
@@ -148,16 +149,27 @@ namespace {
 
             // [[inject]]
             if (auto arr = tbl["inject"].as_array()) {
-                std::filesystem::path steamDir = std::filesystem::path(configPath).parent_path();
+                std::filesystem::path configDir = std::filesystem::path(configPath).parent_path();
                 for (auto& node : *arr) {
                     auto t = node.as_table();
                     if (!t) continue;
                     auto path = (*t)["path"].value<std::string>();
                     if (!path || path->empty()) continue;
 
-                    // Bare names resolve next to steam.exe.
+                    // Relative paths resolve next to opensteamtool.toml, DLL dir, or steam.exe
                     std::filesystem::path full = *path;
-                    if (full.is_relative()) full = steamDir / full;
+                    if (full.is_relative()) {
+                        std::filesystem::path candidate = configDir / full;
+                        if (std::filesystem::exists(candidate)) {
+                            full = candidate;
+                        } else if (DllDir[0] != '\0' && std::filesystem::exists(std::filesystem::path(DllDir) / full)) {
+                            full = std::filesystem::path(DllDir) / full;
+                        } else if (SteamInstallPath[0] != '\0' && std::filesystem::exists(std::filesystem::path(SteamInstallPath) / full)) {
+                            full = std::filesystem::path(SteamInstallPath) / full;
+                        } else {
+                            full = candidate;
+                        }
+                    }
                     if (!std::filesystem::exists(full)) {
                         LOG_WARN("inject dll not found: {}", full.string());
                         continue;

@@ -1,4 +1,5 @@
 #include "CloudRedirectHost.h"
+#include "dllmain.h"
 
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "Utils/Config/Config.h"
@@ -63,12 +64,21 @@ namespace {
 
     std::filesystem::path ResolveLibraryPath(const std::string& steamRoot,
                                              const std::string& configured) {
-        if (configured.empty())
+        if (configured.empty()) {
+            if (DllDir[0] != '\0') {
+                auto p = std::filesystem::path(DllDir) / "cloud_redirect.dll";
+                if (std::filesystem::exists(p)) return p;
+            }
             return std::filesystem::path(steamRoot) / "cloud_redirect.dll";
+        }
 
         std::filesystem::path lib(configured);
         if (lib.is_absolute())
             return lib;
+        if (DllDir[0] != '\0') {
+            auto p = std::filesystem::path(DllDir) / lib;
+            if (std::filesystem::exists(p)) return p;
+        }
         return std::filesystem::path(steamRoot) / lib;
     }
 
