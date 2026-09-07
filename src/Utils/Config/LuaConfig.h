@@ -48,6 +48,10 @@ namespace LuaConfig{
     // ProtectionScan in DenuvoAuth (for games where the heuristic fails).
     bool IsForcedDenuvo(AppId_t appId);
 
+    // Returns true if the appid was marked via nodenuvo() / disallowdenuvo(),
+    // completely skipping ProtectionScan and Denuvo authorization.
+    bool IsNoDenuvo(AppId_t appId);
+
     // On-demand eticket backend URL set via seteticketurl() in Lua config.
     // Empty string means the feature is disabled and EticketClient falls
     // back to the static credential-store ticket (original behaviour).

@@ -277,6 +277,14 @@ namespace {
             if (!(section.IsExecutable() && section.IsWritable())) continue;
             if (section.rawSize < kProtectorBlobMinBytes) continue;
 
+            // Skip known non-Denuvo engine sections:
+            // .rex and .mx are Capcom RE Engine's internal runtime sections (RWX), not Denuvo.
+            if (section.name == ".rex" || section.name == ".mx") {
+                LOG_PIPE_DEBUG("DenuvoAuth: skipping known non-Denuvo section {} path={}",
+                               section.name, module.path);
+                continue;
+            }
+
             const size_t sampleSize =
                 (std::min)(static_cast<size_t>(section.rawSize), kProtectorBlobEntropySampleBytes);
             const OSTPlatform::PE::ByteBuffer sample = image.ReadRawBytes(section.rawOffset, sampleSize);

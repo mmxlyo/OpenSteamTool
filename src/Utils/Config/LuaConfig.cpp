@@ -32,6 +32,8 @@ namespace LuaConfig{
     std::unordered_map<std::string, AppId_t> ProcessNameAppIdMap{};
     // App IDs that should bypass ProtectionScan and be treated as Denuvo games.
     std::unordered_set<AppId_t> ForcedDenuvoSet{};
+    // App IDs that should bypass ProtectionScan and be treated as non-Denuvo games.
+    std::unordered_set<AppId_t> NoDenuvoSet{};
     // On-demand eticket mint endpoint, set via seteticketurl() in Lua config.
     // Empty = disabled (EticketClient falls back to credential-store ticket).
     std::string EticketUrl{};
@@ -301,6 +303,17 @@ namespace LuaConfig{
         return 0;
     }
 
+    static int lua_nodenuvo(lua_State* L) {
+        // nodenuvo(appid) — explicitly mark as non-Denuvo, bypassing ProtectionScan.
+        if (lua_gettop(L) < 1 || !lua_isinteger(L, 1))
+            return luaL_error(L, "nodenuvo requires (appid: integer)");
+        lua_Integer value = lua_tointeger(L, 1);
+        if (value <= 0 || value > static_cast<lua_Integer>(UINT32_MAX))
+            return luaL_error(L, "nodenuvo: appid out of range");
+        NoDenuvoSet.insert(static_cast<AppId_t>(value));
+        return 0;
+    }
+
     static int lua_seteticketurl(lua_State* L) {
         // seteticketurl("http://your-backend/eticket")
         // Endpoint that mints fresh nonce-bound encrypted app tickets for
@@ -490,6 +503,8 @@ namespace LuaConfig{
         register_func(g_lua_state, "addtoken", lua_addtoken);
         register_func(g_lua_state, "addprocess", lua_addprocess);
         register_func(g_lua_state, "forcedenuvo", lua_forcedenuvo);
+        register_func(g_lua_state, "nodenuvo", lua_nodenuvo);
+        register_func(g_lua_state, "disallowdenuvo", lua_nodenuvo);
         register_func(g_lua_state, "seteticketurl", lua_seteticketurl);
         // we don't need it?
         // register_func(g_lua_state, "pinapp", lua_pinApp);
@@ -521,6 +536,10 @@ namespace LuaConfig{
 
     bool IsForcedDenuvo(AppId_t appId) {
         return ForcedDenuvoSet.count(appId) > 0;
+    }
+
+    bool IsNoDenuvo(AppId_t appId) {
+        return NoDenuvoSet.count(appId) > 0;
     }
 
     const std::string& GetEticketUrl() {

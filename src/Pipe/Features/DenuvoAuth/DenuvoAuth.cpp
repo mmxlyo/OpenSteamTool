@@ -159,7 +159,10 @@ namespace {
         }
 
         auth.scanned = true;
-        if (LuaConfig::IsForcedDenuvo(appId)) {
+        if (LuaConfig::IsNoDenuvo(appId)) {
+            auth.denuvo = false;
+            LOG_PIPE_INFO("DenuvoAuth: nodenuvo appid={} — skipping ProtectionScan and forcing non-Denuvo", appId);
+        } else if (LuaConfig::IsForcedDenuvo(appId)) {
             auth.denuvo = true;
             LOG_PIPE_INFO("DenuvoAuth: forcedenuvo appid={} — skipping ProtectionScan", appId);
         } else {
