@@ -11,20 +11,55 @@
 
 #include <windows.h>
 
-// prepare key runtime paths.
-bool InitializeSteamComponents()
+// Prepare key runtime paths.
+// Portable: Steam components (steamclient64.dll, steamui.dll, etc.) are located
+// in Steam's real installation directory, while configuration and Lua scripts can be
+// loaded from the portable DLL directory or fallback to Steam's installation directory.
+bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 {
-    const std::string steamInstallPath = OSTPlatform::DynamicLibrary::GetCurrentDirectoryPath();
-    if (steamInstallPath.empty()) {
+    // 1. Locate Steam's actual install directory (where steam.exe and steamclient64.dll reside).
+    // Injected into steam.exe: GetModuleDirectory(nullptr) returns the directory of steam.exe.
+    auto steamExeDir = OSTPlatform::DynamicLibrary::GetModuleDirectory(nullptr);
+    std::string steamPath = steamExeDir.string();
+    if (steamPath.empty()) {
+        steamPath = OSTPlatform::DynamicLibrary::GetCurrentDirectoryPath();
+    }
+    if (steamPath.empty()) {
         return false;
     }
-    sprintf_s(SteamInstallPath, kRuntimePathCapacity, "%s", steamInstallPath.c_str());
+    sprintf_s(SteamInstallPath, kRuntimePathCapacity, "%s", steamPath.c_str());
     sprintf_s(SteamclientPath, kRuntimePathCapacity, "%s\\steamclient64.dll",  SteamInstallPath);
     sprintf_s(SteamUIPath,     kRuntimePathCapacity, "%s\\steamui.dll",        SteamInstallPath);
     sprintf_s(DiversionPath,   kRuntimePathCapacity, "%s\\bin\\diversion.dll", SteamInstallPath);
-    sprintf_s(LuaDir,          kRuntimePathCapacity, "%s\\config\\lua",        SteamInstallPath);
-    sprintf_s(ConfigPath,      kRuntimePathCapacity, "%s\\opensteamtool.toml", SteamInstallPath);
-    
+
+    // 2. Locate OpenSteamTool DLL directory (portable mode support).
+    auto dllDir = OSTPlatform::DynamicLibrary::GetModuleDirectory(selfModule);
+    std::string dllPath = dllDir.string();
+    if (dllPath.empty()) {
+        dllPath = steamPath;
+    }
+    sprintf_s(DllDir, kRuntimePathCapacity, "%s", dllPath.c_str());
+
+    // 3. Resolve config and lua directory:
+    // Check DllDir first (portable folder), fallback to SteamInstallPath.
+    std::string tomlPath = (std::filesystem::path(DllDir) / "opensteamtool.toml").string();
+    if (!std::filesystem::exists(tomlPath)) {
+        std::string steamToml = (std::filesystem::path(SteamInstallPath) / "opensteamtool.toml").string();
+        if (std::filesystem::exists(steamToml) || dllPath.empty()) {
+            tomlPath = steamToml;
+        }
+    }
+    sprintf_s(ConfigPath, kRuntimePathCapacity, "%s", tomlPath.c_str());
+
+    std::string luaPath = (std::filesystem::path(DllDir) / "config" / "lua").string();
+    if (!std::filesystem::exists(luaPath)) {
+        std::string steamLua = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
+        if (std::filesystem::exists(steamLua) || dllPath.empty()) {
+            luaPath = steamLua;
+        }
+    }
+    sprintf_s(LuaDir, kRuntimePathCapacity, "%s", luaPath.c_str());
+
     client_hModule = OSTPlatform::DynamicLibrary::Load(SteamclientPath);
     if (!client_hModule) {
         LOG_ERROR("Load steamclient64.dll failed: {} (err={})",
@@ -32,9 +67,9 @@ bool InitializeSteamComponents()
         return false;
     }
     LOG_INFO("Loaded steamclient64.dll from {}", SteamclientPath);
-    
+
     ui_hModule = OSTPlatform::DynamicLibrary::Load(SteamUIPath);
-    if(!ui_hModule) {
+    if (!ui_hModule) {
         LOG_ERROR("Load failed for steamui.dll: err={}", OSTPlatform::DynamicLibrary::GetLastErrorCode());
         return false;
     }
@@ -48,7 +83,7 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     Log::Init(selfModule);
     LOG_INFO("OpenSteamTool init thread started");
 
-    if (!InitializeSteamComponents()) {
+    if (!InitializeSteamComponents(selfModule)) {
         LOG_ERROR("InitializeSteamComponents failed");
         return 1;
     }
@@ -70,6 +105,14 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     std::vector<std::string> watchDirs = Config::GetLuaPaths();
     watchDirs.push_back(std::string(LuaDir));
+    // If DllDir and SteamInstallPath are different, also watch Steam's config/lua if it exists
+    if (_stricmp(SteamInstallPath, DllDir) != 0) {
+        std::string steamLua = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
+        if (std::filesystem::exists(steamLua) && steamLua != std::string(LuaDir)) {
+            watchDirs.push_back(steamLua);
+        }
+    }
+
     for (const auto& dir : watchDirs)
         LuaConfig::ParseDirectory(dir);
 
