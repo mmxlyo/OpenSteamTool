@@ -97,10 +97,25 @@ La herramienta `extract_tickets` vuelca las cadenas hexadecimales de `AppTicket`
 - Soporte para la sincronización con Steam Cloud (este es un proyecto enorme).
 
 ## Uso
-1. Ejecuta `build.bat` desde la raíz del proyecto para compilarlo.
+
+### Método 1: Modo Portátil (Recomendado, usando ost-Injector)
+
+El modo portátil funciona de forma completamente independiente: **no se coloca ninguna DLL en el directorio de Steam y la carpeta de instalación de Steam permanece intacta**:
+
+1. Extrae el paquete de lanzamiento (que contiene `ost-Injector.exe`, `OpenSteamTool.dll`, `CreateAutoInjectTask.bat`, `DeleteAutoInjectTask.bat`, `config.ini`, etc.) en cualquier carpeta portátil independiente (por ejemplo, `D:\OpenSteamTool_Portable`).
+2. Crea una carpeta `config/lua/` en ese directorio y coloca allí tus scripts Lua de desbloqueo (como `games.lua`).
+3. Elige un método de inicio:
+   - **Inicio Manual**: Ejecuta `ost-Injector.exe` directamente. Detectará o iniciará Steam e inyectará `OpenSteamTool.dll` tan pronto como la interfaz de Steam esté lista.
+   - **Inyección Automática al Iniciar Sesión**: Haz clic derecho en `CreateAutoInjectTask.bat` y selecciona "Ejecutar como administrador" para crear una tarea programada. El inyector se ejecutará silenciosamente en segundo plano (modo `-watch`) y se inyectará automáticamente cada vez que se inicie Steam. Para desinstalar la tarea, haz clic derecho y ejecuta `DeleteAutoInjectTask.bat` como administrador.
+   - **Línea de Comandos**: `ost-Injector.exe` admite `-watch` (demonio en segundo plano) y `-silent` (inyección silenciosa única). El archivo `config.ini` permite personalizar la ruta del ejecutable de Steam y la ruta de la DLL.
+
+### Método 2: Modo Estándar (Secuestro de DLL / DLL Hijacking)
+
+1. Ejecuta `build.bat` desde la raíz del proyecto para compilarlo, o descarga un paquete Release precompilado.
 2. Copia los archivos generados `dwmapi.dll`, `xinput1_4.dll` y `OpenSteamTool.dll` al directorio raíz de Steam.
-3. Crea un directorio para Lua (por ejemplo, C:\steam\config\lua) y coloca allí tus scripts de Lua. La DLL los cargará y ejecutará automáticamente.
-4. Ejemplo de Lua:
+3. Crea un directorio para Lua (por ejemplo, `C:\Program Files (x86)\Steam\config\lua`) y coloca allí tus scripts de Lua. La DLL los cargará y ejecutará automáticamente.
+
+### Ejemplo de Configuración Lua
 ```lua
 addappid(1361510) -- desbloquea el juego con appid 1361510
 
@@ -256,9 +271,9 @@ build.bat
 ```
 
 ### Archivos de salida
-- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`
+- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`, `build/Debug/ost-Injector.exe`, y scripts auxiliares copiados automáticamente.
 
-- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`
+- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`, `build/Release/ost-Injector.exe`, y scripts auxiliares copiados automáticamente.
 
 ## Descargo de responsabilidad
 Este proyecto se proporciona únicamente con fines de investigación y educativos. Eres responsable de cumplir con las leyes locales, los términos de servicio de la plataforma y las licencias de software correspondientes.

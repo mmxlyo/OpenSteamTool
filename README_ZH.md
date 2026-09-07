@@ -103,10 +103,24 @@
 
 ## 使用方法
 
-1. 在项目根目录运行 `build.bat` 构建项目
-2. 将生成的 `dwmapi.dll`、`xinput1_4.dll` 和 `OpenSteamTool.dll` 复制到 Steam 根目录
-3. 创建 Lua 目录（例如 `C:\steam\config\lua`）并将 Lua 脚本放在那里。DLL 会自动加载并执行它们
-4. Lua 示例：
+### 方式一：便携模式（推荐，使用 ost-Injector）
+
+便携模式完全独立运行，**无需向 Steam 安装目录放置任何 DLL，也不改动 Steam 文件夹**：
+
+1. 解压构建好的发布包（包含 `ost-Injector.exe`、`OpenSteamTool.dll`、`CreateAutoInjectTask.bat`、`DeleteAutoInjectTask.bat`、`config.ini` 等）到任意独立便携目录（例如 `D:\OpenSteamTool_Portable`）。
+2. 在该目录下创建 `config/lua/` 文件夹，并放入游戏或 DLC 解锁脚本（如 `games.lua`）。
+3. 选择启动方式：
+   - **手动启动**：直接双击运行 `ost-Injector.exe`，注入器会自动检测或拉起 Steam，并在 Steam UI 就绪后自动完成注入。
+   - **开机自动静默注入**：右键以管理员身份运行 `CreateAutoInjectTask.bat`，即可创建开机登录计划任务。注入器将在后台以 `-watch` 模式常驻静默监听，一旦检测到 Steam 启动立即自动完成注入。若需移除自启任务，右键管理员运行 `DeleteAutoInjectTask.bat` 即可。
+   - **命令行模式**：`ost-Injector.exe` 支持 `-watch`（后台常驻监听）与 `-silent`（单次静默注入）。默认配置文件 `config.ini` 可自定义 Steam 可执行程序路径与目标 DLL 路径。
+
+### 方式二：标准模式（DLL 劫持）
+
+1. 在项目根目录运行 `build.bat` 构建项目，或下载预编译 Release 包。
+2. 将生成的 `dwmapi.dll`、`xinput1_4.dll` 和 `OpenSteamTool.dll` 复制到 Steam 根目录。
+3. 创建 Lua 目录（例如 `C:\Program Files (x86)\Steam\config\lua`）并将 Lua 脚本放在那里。DLL 会自动加载并执行它们。
+
+### Lua 配置示例
 ```lua
 addappid(1361510) -- 解锁 appid 为 1361510 的游戏
 
@@ -264,8 +278,8 @@ build.bat
 ```
 
 ### 输出
-- Debug：`build/Debug/OpenSteamTool.dll`、`build/Debug/dwmapi.dll`、`build/Debug/xinput1_4.dll`
-- Release：`build/Release/OpenSteamTool.dll`、`build/Release/dwmapi.dll`、`build/Release/xinput1_4.dll`
+- Debug：`build/Debug/OpenSteamTool.dll`、`build/Debug/dwmapi.dll`、`build/Debug/xinput1_4.dll`、`build/Debug/ost-Injector.exe` 以及自动复制的辅助脚本
+- Release：`build/Release/OpenSteamTool.dll`、`build/Release/dwmapi.dll`、`build/Release/xinput1_4.dll`、`build/Release/ost-Injector.exe` 以及自动复制的辅助脚本
 
 ## 免责声明
 本项目仅供研究和教育目的使用。你负责遵守当地法律、平台服务条款和软件许可证。

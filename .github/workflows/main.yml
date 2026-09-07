@@ -73,9 +73,16 @@ jobs:
 
             Download `OpenSteamTool-${{ github.event.inputs.version }}-Release.zip` (or the `-Debug` variant if you need logging to `<steam>/opensteamtool directory`).
 
-            Extract and copy `dwmapi.dll`, `xinput1_4.dll` and `OpenSteamTool.dll` to your Steam root directory (e.g. `C:\Program Files (x86)\Steam`).
+            ### Method 1: Portable Mode (Recommended, ost-Injector)
+            1. Extract the zip to any standalone folder outside the Steam directory.
+            2. Place your Lua unlock scripts in `config/lua/` inside that folder.
+            3. Run `ost-Injector.exe` to launch/inject into Steam, or run `CreateAutoInjectTask.bat` to set up background auto-injection on system startup.
+            *(No files are placed in or modify your Steam directory!)*
 
-            Create a Lua config directory (for example `C:\Program Files (x86)\Steam\config\lua`) and place your Lua scripts there. **NOT** `C:\Program Files (x86)\Steam\config\stplug-in`!
+            ### Method 2: Standard Mode (DLL Hijacking)
+            1. Extract and copy `dwmapi.dll`, `xinput1_4.dll` and `OpenSteamTool.dll` directly to your Steam root directory (e.g. `C:\Program Files (x86)\Steam`).
+            2. Create a Lua config directory (`C:\Program Files (x86)\Steam\config\lua`) and place your Lua scripts there. **NOT** `config\stplug-in`!
           files: |
             OpenSteamTool-${{ github.event.inputs.version }}-Release.zip
             OpenSteamTool-${{ github.event.inputs.version }}-Debug.zip
+

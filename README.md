@@ -101,10 +101,25 @@ The `extract_tickets` tool dumps the `AppTicket` and `ETicket` hex strings you n
 - Steam Cloud synchronization support.(This is a huge project)
 
 ## Usage
-1. Run `build.bat` from the project root to build the project.
-2. Copy generated `dwmapi.dll`, `xinput1_4.dll` and `OpenSteamTool.dll` to the Steam root directory.
-3. Create Lua directory (for example `C:\steam\config\lua`) and place Lua scripts there. The DLL will automatically load and execute them.
-4. Lua example:
+
+### Method 1: Portable Mode (Recommended, using ost-Injector)
+
+Portable mode operates completely independently: **no DLLs are placed in the Steam directory, and the Steam installation folder remains untouched**:
+
+1. Extract the build / release package (containing `ost-Injector.exe`, `OpenSteamTool.dll`, `CreateAutoInjectTask.bat`, `DeleteAutoInjectTask.bat`, `config.ini`, etc.) to any standalone portable directory (e.g. `D:\OpenSteamTool_Portable`).
+2. Create a `config/lua/` folder in that directory and place your game/DLC unlock Lua scripts there (e.g. `games.lua`).
+3. Choose a launch method:
+   - **Manual Launch**: Run `ost-Injector.exe` directly. It will detect or launch Steam and inject `OpenSteamTool.dll` once the Steam UI initializes.
+   - **Auto-Inject on Startup**: Right-click `CreateAutoInjectTask.bat` and select "Run as administrator" to create a scheduled logon task. The injector runs quietly in the background (`-watch` mode) and auto-injects whenever Steam starts. To remove the task, right-click and run `DeleteAutoInjectTask.bat` as administrator.
+   - **Command Line Modes**: `ost-Injector.exe` supports `-watch` (background daemon) and `-silent` (one-shot silent injection). The default `config.ini` allows customizing the Steam executable path and DLL path.
+
+### Method 2: Standard Mode (DLL Hijacking)
+
+1. Run `build.bat` from the project root to build the project, or download a pre-built Release package.
+2. Copy the generated `dwmapi.dll`, `xinput1_4.dll`, and `OpenSteamTool.dll` to your Steam root directory.
+3. Create a Lua directory (e.g. `C:\Program Files (x86)\Steam\config\lua`) and place your Lua scripts there. The DLL will automatically load and execute them.
+
+### Lua Configuration Example
 ```lua
 addappid(1361510) -- unlock game with appid 1361510
 
@@ -292,8 +307,8 @@ build.bat
 ```
 
 ### Output
-- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`
-- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`
+- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`, `build/Debug/ost-Injector.exe`, and auto-copied helper scripts
+- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`, `build/Release/ost-Injector.exe`, and auto-copied helper scripts
 
 ## Disclaimer
 This project is provided for research and educational purposes only. You are responsible for complying with local laws, platform terms of service, and software licenses.
