@@ -4,6 +4,8 @@
 #include "dllmain.h"
 #include "steam_messages.pb.h"
 #include "Utils/HookSupport/VehCommon.h"
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <thread>
 #include <string_view>
@@ -22,18 +24,29 @@ namespace
         std::string_view p(path);
         auto endsWithCi = [](std::string_view str, std::string_view suffix) {
             if (str.size() < suffix.size()) return false;
-            auto end = str.substr(str.size() - suffix.size());
-            return _strnicmp(end.data(), suffix.data(), suffix.size()) == 0;
+            return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin(),
+                [](char a, char b) {
+                    return std::tolower(static_cast<unsigned char>(a)) ==
+                           std::tolower(static_cast<unsigned char>(b));
+                });
         };
-        return _stricmp(path, "steamclient64.dll") == 0 ||
-               _stricmp(path, "steamclient.dll") == 0 ||
+        auto equalsCi = [](std::string_view a, std::string_view b) {
+            if (a.size() != b.size()) return false;
+            return std::equal(a.begin(), a.end(), b.begin(),
+                [](char c1, char c2) {
+                    return std::tolower(static_cast<unsigned char>(c1)) ==
+                           std::tolower(static_cast<unsigned char>(c2));
+                });
+        };
+        return equalsCi(p, "steamclient64.dll") ||
+               equalsCi(p, "steamclient.dll") ||
                endsWithCi(p, "\\steamclient64.dll") ||
                endsWithCi(p, "\\steamclient.dll") ||
                endsWithCi(p, "/steamclient64.dll") ||
                endsWithCi(p, "/steamclient.dll");
     }
 
-    HOOK_FUNC(LoadModuleWithPath, HMODULE, const char* path, bool flags)
+    HOOK_FUNC(LoadModuleWithPath, void*, const char* path, bool flags)
     {
         LOG_STEAMUI_INFO("LoadModuleWithPath called with path: {}, flags: {}",
                          path ? path : "(null)", flags);
@@ -49,12 +62,12 @@ namespace
             }
         }
 
-        HMODULE h = oLoadModuleWithPath(path, flags);
+        void* h = oLoadModuleWithPath(path, flags);
 
         if (isSteamClient && client_hModule) {
-            LOG_STEAMUI_INFO("LoadModuleWithPath: diverted {} (original {:p}) -> diversion {:p}",
-                             path, static_cast<void*>(h), static_cast<void*>(client_hModule));
-            return reinterpret_cast<HMODULE>(client_hModule);
+            LOG_STEAMUI_INFO("LoadModuleWithPath: diverted {} (original {}) -> diversion {}",
+                             path ? path : "steamclient64.dll", h, static_cast<void*>(client_hModule));
+            return client_hModule;
         }
 
         return h;
