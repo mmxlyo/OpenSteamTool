@@ -72,22 +72,21 @@
    extract_tickets.exe 1361510
    ```
 3. 它从注册表读取 Steam 安装路径，加载 `steamclient64.dll`，并将所有内容写入可执行文件旁边的 `<appid>/` 文件夹：
+   - `<appid>.lua` — 自动生成开箱即用的完整 Lua 配置文件（包含 `addappid`、提取的 Depot 解密密钥、`setAppTicket`、`setETicket`，可直接复制到 `config/lua/` 目录使用）
+   - `depot_<depotid>.key` — 原始 32 字节 Depot 解密密钥（若本地缓存存在）
    - `appticket.bin` — 原始应用所有权令牌（二进制）
    - `eticket.bin` — 原始加密应用令牌（二进制）
-   - `tickets.txt` — 包含十六进制字符串的纯文本摘要：
+   - `tickets.txt` — 包含密钥与令牌十六进制字符串的纯文本摘要：
      ```
      appid:1361510
+     depotkey(1361511):5954562e...
      appticket(184 bytes):14000000...
      eticket(143 bytes):...
      ```
    无法获取的令牌报告为 `appticket:null` / `eticket:null`
-4. 将 `tickets.txt` 中的十六进制字符串粘贴到你的 Lua 配置中：
-   ```lua
-   setAppTicket(1361510, "14000000...")
-   setETicket(1361510, "...")
-   ```
+4. 工具会自动在输出目录生成完整、可直接使用的 `<appid>.lua` 脚本；你也可以运行 `ConvertTicketsToLua.bat`（或 `ConvertTicketsToLua.ps1`）批量将已有的 `tickets.txt` 转换为包含密钥的 `.lua` 文件。
 
-> **注意：** 令牌仅当从**真正拥有**游戏的账户提取时才有效
+> **注意：** 令牌和解密密钥仅当从**真正拥有**该游戏的账户提取时才有效。如果尚未在 Steam 下载过该游戏，在 Steam 中点击一次安装/下载即可缓存对应 Depot 的解密密钥到本地。
 
 ### 统计和成就
 - 为未拥有的游戏启用统计和成就

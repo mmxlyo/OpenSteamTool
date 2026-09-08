@@ -71,22 +71,21 @@ The `extract_tickets` tool dumps the `AppTicket` and `ETicket` hex strings you n
    extract_tickets.exe 1361510
    ```
 3. It reads the Steam install path from the registry, loads `steamclient64.dll`, and writes everything into an `<appid>/` folder next to the executable:
+   - `<appid>.lua` — ready-to-use full Lua config (with `addappid`, extracted depot decryption keys, `setAppTicket`, `setETicket`, ready to place directly into `config/lua/`)
+   - `depot_<depotid>.key` — raw 32-byte depot decryption key (when cached)
    - `appticket.bin` — raw app ownership ticket (binary)
    - `eticket.bin` — raw encrypted app ticket (binary)
-   - `tickets.txt` — plain-text summary with the hex strings:
+   - `tickets.txt` — plain-text summary with keys and ticket hex strings:
      ```
      appid:1361510
+     depotkey(1361511):5954562e...
      appticket(184 bytes):14000000...
      eticket(143 bytes):...
      ```
    A ticket that could not be obtained is reported as `appticket:null` / `eticket:null`.
-4. Paste the hex strings from `tickets.txt` into your Lua config:
-   ```lua
-   setAppTicket(1361510, "14000000...")
-   setETicket(1361510, "...")
-   ```
+4. The generated `<appid>.lua` is completely ready to use; you can copy it directly to your OpenSteamTool `config/lua/` directory. You can also run `ConvertTicketsToLua.bat` (or `ConvertTicketsToLua.ps1`) to batch convert existing `tickets.txt` files into `.lua` configs with keys included.
 
-> **Note:** Tickets are only valid when extracted from an account that **genuinely owns** the game.
+> **Note:** Tickets and decryption keys are only valid when extracted from an account that **genuinely owns** the game. If you haven't downloaded the game on Steam yet, starting the install/download once will cache the depot decryption keys locally.
 
 ### Stats and Achievements
 - Enable stats and achievements for unowned games.
