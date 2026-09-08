@@ -29,6 +29,8 @@
 inline OSTPlatform::DynamicLibrary::ModuleHandle client_hModule = nullptr;
 inline OSTPlatform::DynamicLibrary::ModuleHandle ui_hModule = nullptr;
 
+inline std::atomic<bool> g_HooksInstalled{false};
+
 inline constexpr size_t kRuntimePathCapacity = 260;
 
 inline char SteamInstallPath[kRuntimePathCapacity] = {};

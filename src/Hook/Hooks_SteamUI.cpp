@@ -4,12 +4,62 @@
 #include "dllmain.h"
 #include "steam_messages.pb.h"
 #include "Utils/HookSupport/VehCommon.h"
+#include <chrono>
+#include <thread>
+#include <string_view>
 #include <mutex>
 #include <unordered_set>
 #include <vector>
 
 namespace
 {
+    using namespace std::chrono_literals;
+    constexpr int  kMaxRetry      = 50;
+    constexpr auto kRetryInterval = 100ms;
+
+    static bool IsSteamClientPath(const char* path) {
+        if (!path) return false;
+        std::string_view p(path);
+        auto endsWithCi = [](std::string_view str, std::string_view suffix) {
+            if (str.size() < suffix.size()) return false;
+            auto end = str.substr(str.size() - suffix.size());
+            return _strnicmp(end.data(), suffix.data(), suffix.size()) == 0;
+        };
+        return _stricmp(path, "steamclient64.dll") == 0 ||
+               _stricmp(path, "steamclient.dll") == 0 ||
+               endsWithCi(p, "\\steamclient64.dll") ||
+               endsWithCi(p, "\\steamclient.dll") ||
+               endsWithCi(p, "/steamclient64.dll") ||
+               endsWithCi(p, "/steamclient.dll");
+    }
+
+    HOOK_FUNC(LoadModuleWithPath, HMODULE, const char* path, bool flags)
+    {
+        LOG_STEAMUI_INFO("LoadModuleWithPath called with path: {}, flags: {}",
+                         path ? path : "(null)", flags);
+
+        const bool isSteamClient = IsSteamClientPath(path);
+
+        if (isSteamClient) {
+            // Wait for all hooks on client_hModule to be fully initialized
+            for (int i = 0; i < kMaxRetry && !g_HooksInstalled.load(); ++i) {
+                LOG_STEAMUI_DEBUG("LoadModuleWithPath: waiting for hooks to be installed... (attempt {}/{})",
+                                  i + 1, kMaxRetry);
+                std::this_thread::sleep_for(kRetryInterval);
+            }
+        }
+
+        HMODULE h = oLoadModuleWithPath(path, flags);
+
+        if (isSteamClient && client_hModule) {
+            LOG_STEAMUI_INFO("LoadModuleWithPath: diverted {} (original {:p}) -> diversion {:p}",
+                             path, static_cast<void*>(h), static_cast<void*>(client_hModule));
+            return reinterpret_cast<HMODULE>(client_hModule);
+        }
+
+        return h;
+    }
+
     RESOLVE_FUNC(RepeatedFieldUint32_Add, void, void* field, const uint32* value);
 
     CAPTURE_THIS_FUNC(GetAppByID, CSteamApp*, g_pController,void* pThis, AppId_t appId, bool bCreate);
@@ -99,6 +149,7 @@ namespace Hooks_SteamUI
         RESOLVE_U(RepeatedFieldUint32_Add);
 
         HOOK_BEGIN();
+        INSTALL_HOOK_U(LoadModuleWithPath);
         INSTALL_HOOK_U(FillInAppOverview);
         INSTALL_HOOK_U(BuildCompleteAppOverviewChange);
         INSTALL_HOOK_U(CSteamUIAppControllerRunFrame);
@@ -108,6 +159,7 @@ namespace Hooks_SteamUI
     void Uninstall()
     {
         UNHOOK_BEGIN();
+        UNINSTALL_HOOK(LoadModuleWithPath);
         UNINSTALL_HOOK(FillInAppOverview);
         UNINSTALL_HOOK(BuildCompleteAppOverviewChange);
         UNINSTALL_HOOK(CSteamUIAppControllerRunFrame);
