@@ -20,10 +20,12 @@ if(WIN32)
     add_executable(ost-Injector
         Injector/Injector.cpp
         Injector/Injector.h
+        Injector/ost-Injector.rc
     )
     target_compile_features(ost-Injector PRIVATE cxx_std_20)
     set_target_properties(ost-Injector PROPERTIES
         OUTPUT_NAME "ost-Injector"
+        WIN32_EXECUTABLE TRUE
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"

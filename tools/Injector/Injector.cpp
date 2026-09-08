@@ -200,6 +200,20 @@ namespace Injector {
         MessageBoxW(NULL, message.c_str(), L"OpenSteamTool Injector Error", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     }
 
+    void EnsureInteractiveConsole() {
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD fileType = (hOut != NULL && hOut != INVALID_HANDLE_VALUE) ? GetFileType(hOut) : FILE_TYPE_UNKNOWN;
+        if (fileType == FILE_TYPE_UNKNOWN) {
+            if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+                AllocConsole();
+            }
+            FILE* fp = nullptr;
+            freopen_s(&fp, "CONOUT$", "w", stdout);
+            freopen_s(&fp, "CONOUT$", "w", stderr);
+            freopen_s(&fp, "CONIN$", "r", stdin);
+        }
+    }
+
     int RunWatcher(const std::wstring& baseDir, const std::wstring& dllPath) {
         HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\OpenSteamTool_AutoInject_Watcher");
         if (!hMutex && GetLastError() == ERROR_ACCESS_DENIED) {
@@ -448,9 +462,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (isWatchMode || isSilentMode) {
-        HWND hWnd = GetConsoleWindow();
-        if (hWnd) ShowWindow(hWnd, SW_HIDE);
+    if (!isWatchMode && !isSilentMode) {
+        Injector::EnsureInteractiveConsole();
     }
 
     std::wstring baseDir = Injector::GetExecutableDirectory();
@@ -491,3 +504,10 @@ int main(int argc, char* argv[]) {
     Injector::RunInteractive(baseDir, exePath, absDllPath);
     return 0;
 }
+
+#if defined(_WIN32)
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
+    return main(__argc, __argv);
+}
+#endif
+
