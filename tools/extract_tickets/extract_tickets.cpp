@@ -23,8 +23,9 @@ namespace {
 
 struct DepotKeyInfo {
     uint32_t depotId{0};
-    std::string hexKey;      // 64 hex characters (32 bytes AES key)
-    std::string manifestId;  // optional manifest id
+    std::string hexKey;           // 64 hex characters (32 bytes AES key)
+    std::string manifestId;       // optional manifest id
+    std::string manifestFilePath; // optional full path to cached .manifest file
 };
 
 bool IsDecimal(std::string_view value) {
@@ -178,6 +179,82 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
         }
     }
     return libraries;
+}
+
+std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath) {
+    std::vector<std::string> dirs;
+    if (!steamPath.empty()) {
+        dirs.push_back(JoinPath(steamPath, "depotcache"));
+    }
+
+    auto libraries = FindSteamLibraryFolders(steamPath);
+    for (const auto& lib : libraries) {
+        std::string dc1 = JoinPath(lib, "depotcache");
+        std::string dc2 = JoinPath(lib, "steamapps\\depotcache");
+        bool exist1 = false, exist2 = false;
+        for (const auto& d : dirs) {
+            if (_stricmp(d.c_str(), dc1.c_str()) == 0) exist1 = true;
+            if (_stricmp(d.c_str(), dc2.c_str()) == 0) exist2 = true;
+        }
+        if (!exist1) dirs.push_back(dc1);
+        if (!exist2) dirs.push_back(dc2);
+    }
+    return dirs;
+}
+
+std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs,
+                                  uint32_t depotId,
+                                  std::string& inOutManifestId) {
+    // 1. If inOutManifestId is known, check if <depotId>_<manifestId>.manifest exists directly
+    if (!inOutManifestId.empty()) {
+        std::string expectedName = std::to_string(depotId) + "_" + inOutManifestId + ".manifest";
+        for (const auto& dc : depotcacheDirs) {
+            std::string fullPath = JoinPath(dc, expectedName);
+            DWORD attr = GetFileAttributesA(fullPath.c_str());
+            if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                return fullPath;
+            }
+        }
+    }
+
+    // 2. Search for <depotId>_*.manifest in depotcache dirs, choosing the latest modified file
+    std::string bestPath;
+    FILETIME bestTime{};
+    std::string bestManifestId;
+
+    for (const auto& dc : depotcacheDirs) {
+        std::string pattern = JoinPath(dc, std::to_string(depotId) + "_*.manifest");
+        WIN32_FIND_DATAA fd{};
+        HANDLE hFind = FindFirstFileA(pattern.c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                    if (bestPath.empty() || CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
+                        bestTime = fd.ftLastWriteTime;
+                        bestPath = JoinPath(dc, fd.cFileName);
+
+                        // Extract manifest GID from filename: <depotId>_<manifestId>.manifest
+                        std::string fname = fd.cFileName;
+                        size_t under = fname.find('_');
+                        size_t dot = fname.rfind('.');
+                        if (under != std::string::npos && dot != std::string::npos && dot > under + 1) {
+                            bestManifestId = fname.substr(under + 1, dot - under - 1);
+                        }
+                    }
+                }
+            } while (FindNextFileA(hFind, &fd));
+            FindClose(hFind);
+        }
+    }
+
+    if (!bestPath.empty()) {
+        if (inOutManifestId.empty()) {
+            inOutManifestId = bestManifestId;
+        }
+        return bestPath;
+    }
+
+    return "";
 }
 
 void ParseAcfDepots(const std::string& acfPath,
@@ -398,7 +475,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     for (const auto& [dId, manifest] : knownDepotManifests) {
         auto it = allDepotKeys.find(dId);
         if (it != allDepotKeys.end() && !it->second.empty()) {
-            result.push_back({dId, it->second, manifest});
+            result.push_back({dId, it->second, manifest, ""});
             addedDepots.insert(dId);
         }
     }
@@ -407,7 +484,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
         if (addedDepots.find(dlcId) == addedDepots.end()) {
             auto it = allDepotKeys.find(dlcId);
             if (it != allDepotKeys.end() && !it->second.empty()) {
-                result.push_back({dlcId, it->second, ""});
+                result.push_back({dlcId, it->second, "", ""});
                 addedDepots.insert(dlcId);
             }
         }
@@ -419,11 +496,34 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                 std::string manifest = "";
                 auto it = knownDepotManifests.find(dId);
                 if (it != knownDepotManifests.end()) manifest = it->second;
-                result.push_back({dId, key, manifest});
+                result.push_back({dId, key, manifest, ""});
                 addedDepots.insert(dId);
             }
         }
     }
+
+    // Also check known depots that might not have keys in config.vdf,
+    // so any cached manifest files can still be discovered and extracted.
+    for (const auto& [dId, manifest] : knownDepotManifests) {
+        if (addedDepots.find(dId) == addedDepots.end()) {
+            result.push_back({dId, "", manifest, ""});
+            addedDepots.insert(dId);
+        }
+    }
+
+    // Search for cached .manifest files across all depotcache directories
+    auto depotcacheDirs = GetDepotcacheDirs(steamPath);
+    for (auto& dk : result) {
+        dk.manifestFilePath = FindDepotManifestFile(depotcacheDirs, dk.depotId, dk.manifestId);
+    }
+
+    // Remove entries that have no key, no manifest file, and no manifest ID
+    result.erase(
+        std::remove_if(result.begin(), result.end(), [](const DepotKeyInfo& dk) {
+            return dk.hexKey.empty() && dk.manifestFilePath.empty() && dk.manifestId.empty();
+        }),
+        result.end()
+    );
 
     std::sort(result.begin(), result.end(), [](const DepotKeyInfo& a, const DepotKeyInfo& b) {
         return a.depotId < b.depotId;
@@ -689,16 +789,39 @@ bool WriteOutputs(uint32_t appId,
 
     // Write binary depot key files (.key)
     for (const auto& dk : depotKeys) {
+        if (dk.hexKey.empty()) continue;
         auto keyBytes = HexStringToBytes(dk.hexKey);
         if (keyBytes) {
             ok = WriteBinaryFile(JoinPath(dir, "depot_" + std::to_string(dk.depotId) + ".key"), *keyBytes) && ok;
         }
     }
 
+    // Copy manifest files (.manifest) if found in depotcache
+    std::vector<std::string> copiedManifests;
+    for (const auto& dk : depotKeys) {
+        if (!dk.manifestFilePath.empty()) {
+            size_t slash = dk.manifestFilePath.find_last_of("\\/");
+            std::string fname = (slash != std::string::npos) ? dk.manifestFilePath.substr(slash + 1) : dk.manifestFilePath;
+            std::string dest = JoinPath(dir, fname);
+            if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
+                copiedManifests.push_back(fname);
+            } else {
+                std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
+            }
+        }
+    }
+
     // Build tickets.txt summary
     std::string text = "appid:" + std::to_string(appId) + "\n";
     for (const auto& dk : depotKeys) {
-        text += "depotkey(" + std::to_string(dk.depotId) + "):" + dk.hexKey + "\n";
+        if (!dk.hexKey.empty()) {
+            text += "depotkey(" + std::to_string(dk.depotId) + "):" + dk.hexKey + "\n";
+        }
+    }
+    for (const auto& dk : depotKeys) {
+        if (!dk.manifestId.empty()) {
+            text += "manifest(" + std::to_string(dk.depotId) + "):" + dk.manifestId + "\n";
+        }
     }
     text += TicketLine("appticket", ownership);
     text += TicketLine("eticket", encrypted);
@@ -716,7 +839,7 @@ bool WriteOutputs(uint32_t appId,
 
     bool appIdHasKey = false;
     for (const auto& dk : depotKeys) {
-        if (dk.depotId == appId) {
+        if (dk.depotId == appId && !dk.hexKey.empty()) {
             appIdHasKey = true;
             break;
         }
@@ -727,10 +850,19 @@ bool WriteOutputs(uint32_t appId,
     }
 
     // Write depot decryption keys
-    if (!depotKeys.empty()) {
+    bool hasKeys = false;
+    for (const auto& dk : depotKeys) {
+        if (!dk.hexKey.empty()) {
+            hasKeys = true;
+            break;
+        }
+    }
+    if (hasKeys) {
         luaText += "\n-- Depot Decryption Keys\n";
         for (const auto& dk : depotKeys) {
-            luaText += "addappid(" + std::to_string(dk.depotId) + ", 1, \"" + dk.hexKey + "\")\n";
+            if (!dk.hexKey.empty()) {
+                luaText += "addappid(" + std::to_string(dk.depotId) + ", 1, \"" + dk.hexKey + "\")\n";
+            }
         }
     }
 
@@ -773,18 +905,36 @@ bool WriteOutputs(uint32_t appId,
     if (ownership) std::cout << ", appticket.bin";
     if (encrypted) std::cout << ", eticket.bin";
     for (const auto& dk : depotKeys) {
-        std::cout << ", depot_" << dk.depotId << ".key";
+        if (!dk.hexKey.empty()) std::cout << ", depot_" << dk.depotId << ".key";
+    }
+    for (const auto& mName : copiedManifests) {
+        std::cout << ", " << mName;
     }
     std::cout << ")\n";
 
-    if (!depotKeys.empty()) {
-        std::cout << "[INFO] Extracted " << depotKeys.size() << " depot decryption key(s):\n";
+    size_t keyCount = 0;
+    for (const auto& dk : depotKeys) {
+        if (!dk.hexKey.empty()) keyCount++;
+    }
+    if (keyCount > 0) {
+        std::cout << "[INFO] Extracted " << keyCount << " depot decryption key(s):\n";
         for (const auto& dk : depotKeys) {
-            std::cout << "       Depot " << dk.depotId << ": " << dk.hexKey << "\n";
+            if (!dk.hexKey.empty()) {
+                std::cout << "       Depot " << dk.depotId << ": " << dk.hexKey << "\n";
+            }
         }
     } else {
         std::cout << "[INFO] No cached depot decryption keys found in config.vdf for AppID " << appId << ".\n";
         std::cout << "[TIP] If this game requires depot keys, start installing/updating it once in Steam to cache them, then run extract_tickets again.\n";
+    }
+
+    if (!copiedManifests.empty()) {
+        std::cout << "[INFO] Extracted " << copiedManifests.size() << " depot manifest file(s) (.manifest):\n";
+        for (const auto& mName : copiedManifests) {
+            std::cout << "       " << mName << "\n";
+        }
+    } else {
+        std::cout << "[INFO] No cached .manifest files found in depotcache for AppID " << appId << ".\n";
     }
 
     std::cout << "[INFO] Ready-to-use Lua script saved to: " << luaPath << "\n";
