@@ -27,6 +27,8 @@
 inline OSTPlatform::DynamicLibrary::ModuleHandle client_hModule = nullptr;
 inline OSTPlatform::DynamicLibrary::ModuleHandle ui_hModule = nullptr;
 
+inline std::atomic<bool> g_HooksInstalled{false};
+
 inline constexpr size_t kRuntimePathCapacity = 260;
 
 inline char SteamInstallPath[kRuntimePathCapacity] = {};
@@ -35,6 +37,7 @@ inline char SteamUIPath[kRuntimePathCapacity]      = {};
 inline char DiversionPath[kRuntimePathCapacity]    = {};
 inline char LuaDir[kRuntimePathCapacity]           = {};
 inline char ConfigPath[kRuntimePathCapacity]       = {};
+inline char DllDir[kRuntimePathCapacity]           = {};
 
 // The fake AppId used by -onlinefix (SpaceWar).
 constexpr AppId_t kOnlineFixAppId = 480;

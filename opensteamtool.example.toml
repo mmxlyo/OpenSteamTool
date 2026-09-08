@@ -83,13 +83,13 @@ enabled = false
 # CloudRedirect (https://github.com/Selectively11/CloudRedirect).
 # When enabled, OpenSteamTool loads cloud_redirect.dll inside Steam, registers
 # every addappid() game as a redirected app, and routes their Steam Cloud RPCs
-# through CloudRedirect's cloud-save engine.
+# through CloudRedirect's cloud-save engine (fully compatible with Diversion memory isolation).
 #
 # Provider sign-in (Google Drive / OneDrive / local folder) is still done through
 # CloudRedirect's own companion app — OpenSteamTool only hosts the DLL.
 enabled = false
-# Path to cloud_redirect.dll. Absolute, or relative to the Steam root directory.
-# Defaults to "<Steam>/cloud_redirect.dll" when unset.
+# Path to cloud_redirect.dll. Absolute, or relative to opensteamtool.toml, DLL dir, or Steam root.
+# Defaults to searching alongside opensteamtool.toml, OpenSteamTool.dll, then Steam root.
 # library = "cloud_redirect.dll"
 
 [remote]
