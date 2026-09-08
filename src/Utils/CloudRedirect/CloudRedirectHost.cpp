@@ -69,6 +69,10 @@ namespace {
                 auto p = std::filesystem::path(DllDir) / "cloud_redirect.dll";
                 if (std::filesystem::exists(p)) return p;
             }
+            if (ConfigPath[0] != '\0') {
+                auto p = std::filesystem::path(ConfigPath).parent_path() / "cloud_redirect.dll";
+                if (std::filesystem::exists(p)) return p;
+            }
             return std::filesystem::path(steamRoot) / "cloud_redirect.dll";
         }
 
@@ -77,6 +81,10 @@ namespace {
             return lib;
         if (DllDir[0] != '\0') {
             auto p = std::filesystem::path(DllDir) / lib;
+            if (std::filesystem::exists(p)) return p;
+        }
+        if (ConfigPath[0] != '\0') {
+            auto p = std::filesystem::path(ConfigPath).parent_path() / lib;
             if (std::filesystem::exists(p)) return p;
         }
         return std::filesystem::path(steamRoot) / lib;
@@ -149,8 +157,8 @@ void Initialize(const char* steamInstallPath) {
     }
 
     g_active.store(true, std::memory_order_release);
-    LOG_INFO("CloudRedirect: loaded {} and initialised cloud save redirection",
-             libPath.string());
+    LOG_INFO("CloudRedirect: loaded {} and initialised cloud save redirection (diversion: {:p})",
+             libPath.string(), static_cast<void*>(client_hModule));
 
     if (g_enableStatsSync) {
         g_enableStatsSync(true, true);
@@ -167,7 +175,7 @@ void Initialize(const char* steamInstallPath) {
     // Vtable hooks let CR handle Cloud RPCs synchronously (slot4 semantics).
     if (g_installVtableHooks) {
         if (g_installVtableHooks())
-            LOG_INFO("CloudRedirect: vtable hooks installed");
+            LOG_INFO("CloudRedirect: vtable hooks installed (routed to diversion module)");
         else
             LOG_WARN("CloudRedirect: vtable hook install failed, using packet-layer path");
     }
