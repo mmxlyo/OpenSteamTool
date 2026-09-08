@@ -10,8 +10,10 @@ if %errorlevel% equ 0 (
     echo.
     echo =======================================================
     echo [SUCCESS] Scheduled task "OpenSteamTool_AutoInject" created!
-    echo The background watcher will start upon logon and automatically
-    echo inject OpenSteamTool.dll whenever Steam starts.
+    echo Starting background watcher service right now...
+    schtasks /run /tn "OpenSteamTool_AutoInject"
+    echo The background watcher is now running and will auto-start upon logon,
+    echo automatically injecting OpenSteamTool.dll whenever Steam starts.
     echo =======================================================
 ) else (
     echo.

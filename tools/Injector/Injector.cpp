@@ -507,7 +507,26 @@ int main(int argc, char* argv[]) {
 
 #if defined(_WIN32)
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
-    return main(__argc, __argv);
+    int argc = 0;
+    LPWSTR* argvW = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::vector<std::string> args;
+    if (argvW) {
+        for (int i = 0; i < argc; ++i) {
+            int size_needed = WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, NULL, 0, NULL, NULL);
+            std::string strTo(size_needed, 0);
+            WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, &strTo[0], size_needed, NULL, NULL);
+            if (!strTo.empty() && strTo.back() == '\0') strTo.pop_back();
+            args.push_back(strTo);
+        }
+        LocalFree(argvW);
+    }
+    std::vector<char*> argvPtrs;
+    for (auto& s : args) {
+        argvPtrs.push_back(&s[0]);
+    }
+    argvPtrs.push_back(nullptr);
+    return main(argc, argvPtrs.data());
 }
 #endif
+
 

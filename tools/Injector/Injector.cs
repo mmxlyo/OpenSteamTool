@@ -395,11 +395,16 @@ namespace OpenSteamToolInjector
             {
                 if (!createdNew)
                 {
-                    // 已有监听实例在运行，直接退出
+                    LogMessage(baseDir, "[Watcher] 检测到已有另一个后台监听实例在运行，本实例自动退出。", true);
                     return;
                 }
 
                 LogMessage(baseDir, "[Watcher] 自动注入后台监听已启动，等待 steam.exe 启动...", true);
+
+                if (!File.Exists(absDllPath))
+                {
+                    LogMessage(baseDir, "[Watcher] 警告: 未找到 Payload DLL 文件: " + absDllPath, true);
+                }
 
                 HashSet<int> injectedPids = new HashSet<int>();
 
@@ -410,6 +415,13 @@ namespace OpenSteamToolInjector
                         Process[] steams = Process.GetProcessesByName("steam");
                         if (steams.Length > 0)
                         {
+                            HashSet<int> currentPids = new HashSet<int>();
+                            foreach (Process p in steams)
+                            {
+                                currentPids.Add(p.Id);
+                            }
+                            injectedPids.RemoveWhere(pid => !currentPids.Contains(pid));
+
                             foreach (Process p in steams)
                             {
                                 int pid = p.Id;
@@ -460,6 +472,10 @@ namespace OpenSteamToolInjector
                                                 CloseHandle(hProcess);
                                             }
                                         }
+                                        else
+                                        {
+                                            LogMessage(baseDir, string.Format("[Watcher] 无法打开 Steam 进程 (PID: {0})，错误码: {1}。若 Steam 以管理员运行，请以管理员身份运行注入器。", pid, Marshal.GetLastWin32Error()), true);
+                                        }
                                     }
                                 }
                             }
@@ -472,7 +488,10 @@ namespace OpenSteamToolInjector
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        LogMessage(baseDir, "[Watcher] 循环异常: " + ex.Message, true);
+                    }
 
                     Thread.Sleep(1500);
                 }
