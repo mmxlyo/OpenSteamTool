@@ -15,6 +15,18 @@ add_executable(extract_tickets
     extract_tickets/extract_tickets.cpp
 )
 target_compile_features(extract_tickets PRIVATE cxx_std_20)
+target_link_libraries(extract_tickets PRIVATE
+    advapi32
+)
+add_custom_command(TARGET extract_tickets POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/extract_tickets/ConvertTicketsToLua.bat"
+        "$<TARGET_FILE_DIR:extract_tickets>/ConvertTicketsToLua.bat"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/extract_tickets/ConvertTicketsToLua.ps1"
+        "$<TARGET_FILE_DIR:extract_tickets>/ConvertTicketsToLua.ps1"
+    COMMENT "Copying extract_tickets companion scripts"
+)
 
 if(WIN32)
     add_executable(ost-Injector

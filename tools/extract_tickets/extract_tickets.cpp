@@ -1,10 +1,15 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -93,7 +98,7 @@ std::optional<std::string> FindSteamInstallPath() {
     return std::nullopt;
 }
 
-std::string JoinPath(std::string base, const char* name) {
+std::string JoinPath(std::string base, std::string_view name) {
     for (char& ch : base) {
         if (ch == '/') ch = '\\';
     }
@@ -358,7 +363,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                 AppId_t dlcId{0};
                 bool available{false};
                 char dlcName[256]{};
-                if (apps->BGetDLCDataByIndex(i, &dlcId, &available, dlcName, sizeof(dlcName)) && dlcId != 0) {
+                if (apps->BGetDLCDataByIndex(i, &dlcId, &available, dlcName, static_cast<int>(sizeof(dlcName))) && dlcId != 0) {
                     knownDlcIds.insert(dlcId);
                     DepotId_t dlcDepots[64]{};
                     uint32_t dlcDepotCount = apps->GetInstalledDepots(dlcId, dlcDepots, 64);
@@ -412,7 +417,8 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
         if (addedDepots.find(dId) == addedDepots.end()) {
             if (dId >= appId && dId <= appId + 50) {
                 std::string manifest = "";
-                if (knownDepotManifests.count(dId)) manifest = knownDepotManifests[dId];
+                auto it = knownDepotManifests.find(dId);
+                if (it != knownDepotManifests.end()) manifest = it->second;
                 result.push_back({dId, key, manifest});
                 addedDepots.insert(dId);
             }
