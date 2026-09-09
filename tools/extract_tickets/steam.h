@@ -93,8 +93,13 @@ public:
 class ISteamUser {
 public:
     virtual HSteamUser GetHSteamUser() = 0;
-    virtual bool BLoggedOn() = 0;
-    virtual uint64 GetSteamID() = 0;
+    // In Valve's Steamworks SDK, GetSteamID() returns CSteamID by value. Under the
+    // MSVC x64 ABI for member functions, returning a class with user-defined constructors
+    // requires the caller to allocate storage and pass a pointer to it in RDX (with 'this'
+    // in RCX), returning that pointer in RAX. Declaring it as GetSteamID(uint64* pOutSteamID)
+    // guarantees that MSVC x64 puts 'this' in RCX and pOutSteamID in RDX, perfectly matching
+    // steamclient64.dll's vtable wrapper and avoiding access violation crashes (0xc0000005).
+    virtual uint64* GetSteamID(uint64* pOutSteamID) = 0;
     virtual int InitiateGameConnection_DEPRECATED(void*, int, uint64, uint32, uint16, bool) = 0;
     virtual void TerminateGameConnection_DEPRECATED(uint32, uint16) = 0;
     virtual void TrackAppUsageEvent(uint64, int, const char*) = 0;

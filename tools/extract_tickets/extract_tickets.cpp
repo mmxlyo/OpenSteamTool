@@ -43,6 +43,14 @@ bool IsDecimal(std::string_view value) {
     return true;
 }
 
+bool IsValidManifestId(std::string_view value) {
+    if (!IsDecimal(value)) return false;
+    for (char ch : value) {
+        if (ch != '0') return true;
+    }
+    return false;
+}
+
 std::optional<uint32_t> ParseAppId(const std::string& value) {
     if (!IsDecimal(value)) return std::nullopt;
 
@@ -50,7 +58,7 @@ std::optional<uint32_t> ParseAppId(const std::string& value) {
     try {
         size_t consumed{0};
         parsed = std::stoul(value, &consumed, 10);
-        if (consumed != value.size() || parsed > 0xFFFFFFFFul) return std::nullopt;
+        if (consumed != value.size() || parsed == 0 || parsed > 0xFFFFFFFFul) return std::nullopt;
     } catch (...) {
         return std::nullopt;
     }
@@ -64,46 +72,6 @@ std::optional<uint32_t> ReadAppIdFromConsole() {
     std::string input;
     if (!std::getline(std::cin, input)) return std::nullopt;
     return ParseAppId(input);
-}
-
-std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, const char* valueName) {
-    HKEY key{nullptr};
-    if (RegOpenKeyExA(root, subKey, 0, KEY_READ | KEY_WOW64_32KEY, &key) != ERROR_SUCCESS) {
-        return std::nullopt;
-    }
-
-    DWORD valueType{0};
-    DWORD valueSize{0};
-    LSTATUS status{RegQueryValueExA(key, valueName, nullptr, &valueType, nullptr, &valueSize)};
-    if (status != ERROR_SUCCESS || valueType != REG_SZ || valueSize == 0) {
-        RegCloseKey(key);
-        return std::nullopt;
-    }
-
-    std::string value(valueSize, '\0');
-    status = RegQueryValueExA(
-        key,
-        valueName,
-        nullptr,
-        nullptr,
-        reinterpret_cast<LPBYTE>(value.data()),
-        &valueSize);
-    RegCloseKey(key);
-
-    if (status != ERROR_SUCCESS) return std::nullopt;
-    if (!value.empty() && value.back() == '\0') value.pop_back();
-    return value;
-}
-
-std::optional<std::string> FindSteamInstallPath() {
-    constexpr const char* kSteamKey{"Software\\Valve\\Steam"};
-
-    if (auto path{QueryRegistryString(HKEY_CURRENT_USER, kSteamKey, "SteamPath")}) {
-        std::cout << "Found SteamPath in HKEY_CURRENT_USER: " << *path << "\n";
-        return path;
-    }
-
-    return std::nullopt;
 }
 
 std::string JoinPath(std::string base, std::string_view name) {
@@ -121,6 +89,80 @@ std::string NormalizeDir(std::string dir) {
     }
     if (!dir.empty() && dir.back() == '\\') dir.pop_back();
     return dir;
+}
+
+std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, const char* valueName) {
+    HKEY key{nullptr};
+    LSTATUS status = RegOpenKeyExA(root, subKey, 0, KEY_READ | KEY_WOW64_32KEY, &key);
+    if (status != ERROR_SUCCESS) {
+        status = RegOpenKeyExA(root, subKey, 0, KEY_READ, &key);
+    }
+    if (status != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+
+    DWORD valueType{0};
+    DWORD valueSize{0};
+    status = RegQueryValueExA(key, valueName, nullptr, &valueType, nullptr, &valueSize);
+    if (status != ERROR_SUCCESS || (valueType != REG_SZ && valueType != REG_EXPAND_SZ) || valueSize == 0) {
+        RegCloseKey(key);
+        return std::nullopt;
+    }
+
+    std::string value(valueSize, '\0');
+    status = RegQueryValueExA(
+        key,
+        valueName,
+        nullptr,
+        nullptr,
+        reinterpret_cast<LPBYTE>(value.data()),
+        &valueSize);
+    RegCloseKey(key);
+
+    if (status != ERROR_SUCCESS) return std::nullopt;
+    value.resize(valueSize);
+    while (!value.empty() && (value.back() == '\0' || value.back() == ' ')) value.pop_back();
+
+    if (valueType == REG_EXPAND_SZ) {
+        char expanded[MAX_PATH * 2]{0};
+        DWORD expLen = ExpandEnvironmentStringsA(value.c_str(), expanded, static_cast<DWORD>(sizeof(expanded)));
+        if (expLen > 0 && expLen < sizeof(expanded)) {
+            value = expanded;
+        }
+    }
+
+    return value;
+}
+
+std::optional<std::string> FindSteamInstallPath() {
+    constexpr const char* kSteamKey{"Software\\Valve\\Steam"};
+
+    if (auto path{QueryRegistryString(HKEY_CURRENT_USER, kSteamKey, "SteamPath")}) {
+        std::string norm = NormalizeDir(*path);
+        std::cout << "Found SteamPath in HKEY_CURRENT_USER: " << norm << "\n";
+        return norm;
+    }
+
+    if (auto path{QueryRegistryString(HKEY_LOCAL_MACHINE, kSteamKey, "InstallPath")}) {
+        std::string norm = NormalizeDir(*path);
+        std::cout << "Found InstallPath in HKEY_LOCAL_MACHINE: " << norm << "\n";
+        return norm;
+    }
+
+    const char* defaultPaths[] = {
+        "C:\\Program Files (x86)\\Steam",
+        "C:\\Program Files\\Steam"
+    };
+    for (const char* p : defaultPaths) {
+        std::string checkExe = JoinPath(p, "steam.exe");
+        DWORD attr = GetFileAttributesA(checkExe.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::cout << "Found Steam install path at default location: " << p << "\n";
+            return NormalizeDir(p);
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::optional<std::vector<uint8_t>> HexStringToBytes(std::string_view hex) {
@@ -146,41 +188,60 @@ std::optional<std::vector<uint8_t>> HexStringToBytes(std::string_view hex) {
 
 std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
     std::vector<std::string> libraries;
-    libraries.push_back(NormalizeDir(steamPath));
+    if (!steamPath.empty()) {
+        libraries.push_back(NormalizeDir(steamPath));
+    }
 
     const std::string libraryVdfPath = JoinPath(steamPath, "steamapps\\libraryfolders.vdf");
     std::ifstream file(libraryVdfPath);
     if (!file) return libraries;
 
+    auto addLibrary = [&](std::string lib) {
+        std::string unescaped;
+        for (size_t i = 0; i < lib.size(); ++i) {
+            if (lib[i] == '\\' && i + 1 < lib.size() && lib[i + 1] == '\\') {
+                unescaped += '\\';
+                ++i;
+            } else {
+                unescaped += lib[i];
+            }
+        }
+        unescaped = NormalizeDir(unescaped);
+        if (!unescaped.empty()) {
+            bool exists = false;
+            for (const auto& existing : libraries) {
+                if (_stricmp(existing.c_str(), unescaped.c_str()) == 0) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) libraries.push_back(unescaped);
+        }
+    };
+
     std::string line;
     while (std::getline(file, line)) {
-        size_t pos = line.find("\"path\"");
-        if (pos != std::string::npos) {
-            size_t start = line.find('"', pos + 6);
-            if (start != std::string::npos) {
-                size_t end = line.find('"', start + 1);
-                if (end != std::string::npos) {
-                    std::string lib = line.substr(start + 1, end - start - 1);
-                    std::string unescaped;
-                    for (size_t i = 0; i < lib.size(); ++i) {
-                        if (lib[i] == '\\' && i + 1 < lib.size() && lib[i + 1] == '\\') {
-                            unescaped += '\\';
-                            ++i;
-                        } else {
-                            unescaped += lib[i];
-                        }
-                    }
-                    unescaped = NormalizeDir(unescaped);
-                    if (!unescaped.empty()) {
-                        bool exists = false;
-                        for (const auto& existing : libraries) {
-                            if (_stricmp(existing.c_str(), unescaped.c_str()) == 0) {
-                                exists = true;
-                                break;
-                            }
-                        }
-                        if (!exists) libraries.push_back(unescaped);
-                    }
+        if (size_t comment = line.find("//"); comment != std::string::npos) {
+            line.erase(comment);
+        }
+
+        std::vector<std::string> tokens;
+        size_t pos = 0;
+        while ((pos = line.find('"', pos)) != std::string::npos) {
+            size_t endPos = line.find('"', pos + 1);
+            if (endPos == std::string::npos) break;
+            tokens.push_back(line.substr(pos + 1, endPos - pos - 1));
+            pos = endPos + 1;
+        }
+
+        if (tokens.size() >= 2) {
+            if (_stricmp(tokens[0].c_str(), "path") == 0) {
+                addLibrary(tokens[1]);
+            } else if (IsDecimal(tokens[0])) {
+                if (tokens[1].find(':') != std::string::npos ||
+                    tokens[1].find('\\') != std::string::npos ||
+                    tokens[1].find('/') != std::string::npos) {
+                    addLibrary(tokens[1]);
                 }
             }
         }
@@ -213,7 +274,7 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
                                   uint32_t depotId,
                                   std::string& inOutManifestId) {
     // 1. If inOutManifestId is known and valid decimal GID, check if <depotId>_<manifestId>.manifest exists directly
-    if (!inOutManifestId.empty() && IsDecimal(inOutManifestId)) {
+    if (IsValidManifestId(inOutManifestId)) {
         std::string expectedName = std::to_string(depotId) + "_" + inOutManifestId + ".manifest";
         for (const auto& dc : depotcacheDirs) {
             std::string fullPath = JoinPath(dc, expectedName);
@@ -236,17 +297,15 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
         if (hFind != INVALID_HANDLE_VALUE) {
             do {
                 if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                    if (bestPath.empty() || CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
-                        bestTime = fd.ftLastWriteTime;
-                        bestPath = JoinPath(dc, fd.cFileName);
-
-                        // Extract manifest GID from filename: <depotId>_<manifestId>.manifest
-                        std::string fname = fd.cFileName;
-                        size_t under = fname.find('_');
-                        size_t dot = fname.rfind('.');
-                        if (under != std::string::npos && dot != std::string::npos && dot > under + 1) {
-                            std::string candidate = fname.substr(under + 1, dot - under - 1);
-                            if (IsDecimal(candidate)) {
+                    std::string fname = fd.cFileName;
+                    size_t under = fname.find('_');
+                    size_t dot = fname.rfind('.');
+                    if (under != std::string::npos && dot != std::string::npos && dot > under + 1) {
+                        std::string candidate = fname.substr(under + 1, dot - under - 1);
+                        if (IsValidManifestId(candidate)) {
+                            if (bestPath.empty() || CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
+                                bestTime = fd.ftLastWriteTime;
+                                bestPath = JoinPath(dc, fname);
                                 bestManifestId = candidate;
                             }
                         }
@@ -258,7 +317,7 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
     }
 
     if (!bestPath.empty()) {
-        if ((inOutManifestId.empty() || !IsDecimal(inOutManifestId)) && !bestManifestId.empty()) {
+        if (!bestManifestId.empty()) {
             inOutManifestId = bestManifestId;
         }
         return bestPath;
@@ -275,29 +334,17 @@ void ParseAcfDepots(const std::string& acfPath,
 
     std::string line;
     bool inInstalledDepots = false;
+    bool inMountedDepots = false;
+    bool pendingInstalledDepots = false;
+    bool pendingMountedDepots = false;
     uint32_t currentDepotId = 0;
     int braceDepth = 0;
-    int depotsDepth = -1;
+    int installedDepth = -1;
+    int mountedDepth = -1;
 
     while (std::getline(file, line)) {
-        for (char c : line) {
-            if (c == '{') {
-                braceDepth++;
-            } else if (c == '}') {
-                if (braceDepth == depotsDepth) {
-                    inInstalledDepots = false;
-                    depotsDepth = -1;
-                }
-                braceDepth--;
-            }
-        }
-
-        if (!inInstalledDepots) {
-            if (line.find("\"InstalledDepots\"") != std::string::npos) {
-                inInstalledDepots = true;
-                depotsDepth = braceDepth;
-            }
-            continue;
+        if (size_t comment = line.find("//"); comment != std::string::npos) {
+            line.erase(comment);
         }
 
         std::vector<std::string> tokens;
@@ -309,22 +356,70 @@ void ParseAcfDepots(const std::string& acfPath,
             pos = endPos + 1;
         }
 
-        if (tokens.size() == 1 && IsDecimal(tokens[0])) {
-            auto parsed = ParseAppId(tokens[0]);
-            if (parsed) {
-                currentDepotId = *parsed;
-                if (outDepots.find(currentDepotId) == outDepots.end()) {
-                    outDepots[currentDepotId] = "";
+        if (!inInstalledDepots && !inMountedDepots) {
+            for (const auto& tok : tokens) {
+                if (_stricmp(tok.c_str(), "InstalledDepots") == 0) {
+                    pendingInstalledDepots = true;
+                    break;
+                } else if (_stricmp(tok.c_str(), "MountedDepots") == 0) {
+                    pendingMountedDepots = true;
+                    break;
                 }
             }
-        } else if (tokens.size() >= 2 && currentDepotId != 0) {
-            if (tokens[0] == "manifest") {
-                outDepots[currentDepotId] = tokens[1];
-            } else if (tokens[0] == "dlcappid") {
-                if (auto dlc = ParseAppId(tokens[1])) {
-                    outDlcIds.insert(*dlc);
-                    if (outDepots.find(*dlc) == outDepots.end()) {
-                        outDepots[*dlc] = "";
+        }
+
+        for (char c : line) {
+            if (c == '{') {
+                braceDepth++;
+                if (pendingInstalledDepots) {
+                    inInstalledDepots = true;
+                    installedDepth = braceDepth;
+                    pendingInstalledDepots = false;
+                } else if (pendingMountedDepots) {
+                    inMountedDepots = true;
+                    mountedDepth = braceDepth;
+                    pendingMountedDepots = false;
+                }
+            } else if (c == '}') {
+                if (inInstalledDepots && braceDepth == installedDepth) {
+                    inInstalledDepots = false;
+                    installedDepth = -1;
+                    currentDepotId = 0;
+                }
+                if (inMountedDepots && braceDepth == mountedDepth) {
+                    inMountedDepots = false;
+                    mountedDepth = -1;
+                }
+                braceDepth--;
+            }
+        }
+
+        if (inInstalledDepots) {
+            if (tokens.size() == 1 && IsDecimal(tokens[0])) {
+                auto parsed = ParseAppId(tokens[0]);
+                if (parsed) {
+                    currentDepotId = *parsed;
+                    if (outDepots.find(currentDepotId) == outDepots.end()) {
+                        outDepots[currentDepotId] = "";
+                    }
+                }
+            } else if (tokens.size() >= 2 && currentDepotId != 0) {
+                if (_stricmp(tokens[0].c_str(), "manifest") == 0) {
+                    outDepots[currentDepotId] = tokens[1];
+                } else if (_stricmp(tokens[0].c_str(), "dlcappid") == 0) {
+                    if (auto dlc = ParseAppId(tokens[1])) {
+                        outDlcIds.insert(*dlc);
+                        if (outDepots.find(*dlc) == outDepots.end()) {
+                            outDepots[*dlc] = "";
+                        }
+                    }
+                }
+            }
+        } else if (inMountedDepots) {
+            if (tokens.size() >= 2 && IsDecimal(tokens[0]) && IsValidManifestId(tokens[1])) {
+                if (auto dId = ParseAppId(tokens[0])) {
+                    if (outDepots[*dId].empty()) {
+                        outDepots[*dId] = tokens[1];
                     }
                 }
             }
@@ -341,31 +436,13 @@ std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::str
     std::string line;
     uint32_t currentDepotId = 0;
     bool inDepots = false;
+    bool pendingDepots = false;
     int braceDepth = 0;
     int depotsDepth = -1;
 
     while (std::getline(file, line)) {
         if (size_t comment = line.find("//"); comment != std::string::npos) {
             line.erase(comment);
-        }
-
-        for (char c : line) {
-            if (c == '{') {
-                braceDepth++;
-            } else if (c == '}') {
-                if (braceDepth == depotsDepth) {
-                    inDepots = false;
-                    depotsDepth = -1;
-                }
-                braceDepth--;
-            }
-        }
-
-        if (!inDepots) {
-            if (line.find("\"depots\"") != std::string::npos) {
-                inDepots = true;
-                depotsDepth = braceDepth;
-            }
         }
 
         std::vector<std::string> tokens;
@@ -377,13 +454,42 @@ std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::str
             pos = endPos + 1;
         }
 
+        if (!inDepots) {
+            for (const auto& tok : tokens) {
+                if (_stricmp(tok.c_str(), "depots") == 0) {
+                    pendingDepots = true;
+                    break;
+                }
+            }
+        }
+
+        for (char c : line) {
+            if (c == '{') {
+                braceDepth++;
+                if (pendingDepots) {
+                    inDepots = true;
+                    depotsDepth = braceDepth;
+                    pendingDepots = false;
+                }
+            } else if (c == '}') {
+                if (inDepots && braceDepth == depotsDepth) {
+                    inDepots = false;
+                    depotsDepth = -1;
+                    currentDepotId = 0;
+                }
+                braceDepth--;
+            }
+        }
+
+        if (!inDepots) continue;
+
         if (tokens.size() == 1 && IsDecimal(tokens[0])) {
             auto parsed = ParseAppId(tokens[0]);
             if (parsed) {
                 currentDepotId = *parsed;
             }
         } else if (tokens.size() >= 2) {
-            if (tokens[0] == "DecryptionKey" && tokens[1].size() == 64 && currentDepotId != 0) {
+            if (_stricmp(tokens[0].c_str(), "DecryptionKey") == 0 && tokens[1].size() == 64 && currentDepotId != 0) {
                 depotKeys[currentDepotId] = tokens[1];
             }
         }
@@ -442,7 +548,10 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
         auto* apps = reinterpret_cast<ISteamApps*>(
             client->GetISteamGenericInterface(user, pipe, kSteamAppsInterfaceVersion));
         auto* steamUser = client->GetISteamUser(user, pipe, kSteamUserInterfaceVersion);
-        uint64 steamId = steamUser ? steamUser->GetSteamID() : 0;
+        uint64 steamId{0};
+        if (steamUser) {
+            steamUser->GetSteamID(&steamId);
+        }
 
         if (apps) {
             DepotId_t depots[128]{};
@@ -495,14 +604,26 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     if (!steamPath.empty()) {
         auto libraries = FindSteamLibraryFolders(steamPath);
         for (const auto& lib : libraries) {
-            std::string acf = JoinPath(lib, ("steamapps\\appmanifest_" + std::to_string(appId) + ".acf").c_str());
+            std::string acf = JoinPath(lib, "steamapps\\appmanifest_" + std::to_string(appId) + ".acf");
             ParseAcfDepots(acf, knownDepotManifests, knownDlcIds);
         }
 
-        for (uint32_t dlcId : knownDlcIds) {
+        std::vector<uint32_t> dlcQueue(knownDlcIds.begin(), knownDlcIds.end());
+        std::unordered_set<uint32_t> visitedDlcs;
+        while (!dlcQueue.empty()) {
+            uint32_t dlcId = dlcQueue.back();
+            dlcQueue.pop_back();
+            if (!visitedDlcs.insert(dlcId).second) continue;
+
             for (const auto& lib : libraries) {
-                std::string acf = JoinPath(lib, ("steamapps\\appmanifest_" + std::to_string(dlcId) + ".acf").c_str());
-                ParseAcfDepots(acf, knownDepotManifests, knownDlcIds);
+                std::string acf = JoinPath(lib, "steamapps\\appmanifest_" + std::to_string(dlcId) + ".acf");
+                std::unordered_set<uint32_t> newlyFoundDlcs;
+                ParseAcfDepots(acf, knownDepotManifests, newlyFoundDlcs);
+                for (uint32_t newDlc : newlyFoundDlcs) {
+                    if (knownDlcIds.insert(newDlc).second) {
+                        dlcQueue.push_back(newDlc);
+                    }
+                }
             }
         }
     }
@@ -551,7 +672,16 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
 
     for (const auto& [dId, key] : allDepotKeys) {
         if (addedDepots.find(dId) == addedDepots.end()) {
-            if (dId >= appId && dId <= appId + 50) {
+            bool inRange = (dId >= appId && dId <= appId + 50);
+            if (!inRange) {
+                for (uint32_t dlcId : knownDlcIds) {
+                    if (dlcId > 0 && dId >= dlcId && dId <= dlcId + 20) {
+                        inRange = true;
+                        break;
+                    }
+                }
+            }
+            if (inRange) {
                 std::string manifest = "";
                 auto it = knownDepotManifests.find(dId);
                 if (it != knownDepotManifests.end()) manifest = it->second;
@@ -578,10 +708,10 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
         }
     }
 
-    // Remove entries that have no key, no manifest file, and no manifest ID
+    // Remove entries that have no key, no manifest file, and no valid manifest ID
     result.erase(
         std::remove_if(result.begin(), result.end(), [](const DepotKeyInfo& dk) {
-            return dk.hexKey.empty() && dk.manifestFilePath.empty() && dk.manifestId.empty();
+            return dk.hexKey.empty() && dk.manifestFilePath.empty() && !IsValidManifestId(dk.manifestId);
         }),
         result.end()
     );
@@ -596,7 +726,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
 HMODULE LoadSteamClient64(std::string& loadedPath) {
     auto steamPath{FindSteamInstallPath()};
     if (!steamPath) {
-        std::cerr << "Failed to find Steam install path in registry.\n";
+        std::cerr << "[WARN] 未在注册表中找到 Steam 安装路径 / Failed to find Steam install path in registry.\n";
         return nullptr;
     }
 
@@ -610,7 +740,7 @@ HMODULE LoadSteamClient64(std::string& loadedPath) {
     SetDllDirectoryA(steamDir.c_str());
     HMODULE module{LoadLibraryExA(loadedPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH)};
     if (!module) {
-        std::cerr << "Failed to load " << loadedPath << " (GetLastError=" << GetLastError() << ").\n";
+        std::cerr << "[WARN] 加载 steamclient64.dll 失败 / Failed to load " << loadedPath << " (GetLastError=" << GetLastError() << ").\n";
         return nullptr;
     }
 
@@ -618,17 +748,18 @@ HMODULE LoadSteamClient64(std::string& loadedPath) {
 }
 
 ISteamClient* CreateSteamClient(HMODULE module) {
+    if (!module) return nullptr;
     auto createInterface{reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module, "CreateInterface"))};
     if (!createInterface) {
-        std::cerr << "steamclient64.dll has no CreateInterface export.\n";
+        std::cerr << "[WARN] steamclient64.dll 缺少 CreateInterface 导出 / steamclient64.dll has no CreateInterface export.\n";
         return nullptr;
     }
 
     int returnCode{0};
     auto* client{reinterpret_cast<ISteamClient*>(createInterface(kSteamClientInterfaceVersion, &returnCode))};
     if (!client) {
-        std::cerr << "CreateInterface(" << kSteamClientInterfaceVersion
-                  << ") failed (returnCode=" << returnCode << ").\n";
+        std::cerr << "[WARN] CreateInterface(" << kSteamClientInterfaceVersion
+                  << ") 失败 / failed (returnCode=" << returnCode << ").\n";
         return nullptr;
     }
     return client;
@@ -636,15 +767,14 @@ ISteamClient* CreateSteamClient(HMODULE module) {
 
 // Open a pipe and attach to the already-running global user
 bool OpenSession(ISteamClient* client, HSteamPipe& pipe, HSteamUser& user) {
+    if (!client) return false;
     pipe = client->CreateSteamPipe();
     if (!pipe) {
-        std::cerr << "CreateSteamPipe failed. Is Steam running?\n";
         return false;
     }
 
     user = client->ConnectToGlobalUser(pipe);
     if (!user) {
-        std::cerr << "ConnectToGlobalUser failed. Is a user logged in?\n";
         client->BReleaseSteamPipe(pipe);
         pipe = 0;
         return false;
@@ -660,8 +790,8 @@ std::optional<std::vector<uint8_t>> ExtractAppOwnershipTicket(
     auto* appTicket{reinterpret_cast<ISteamAppTicket*>(
         client->GetISteamGenericInterface(user, pipe, kSteamAppTicketInterfaceVersion))};
     if (!appTicket) {
-        std::cerr << "GetISteamGenericInterface(" << kSteamAppTicketInterfaceVersion
-                  << ") returned null.\n";
+        std::cerr << "[WARN] GetISteamGenericInterface(" << kSteamAppTicketInterfaceVersion
+                  << ") 返回空 / returned null.\n";
         return std::nullopt;
     }
 
@@ -670,7 +800,7 @@ std::optional<std::vector<uint8_t>> ExtractAppOwnershipTicket(
     uint32_t steamIdOffset{0};
     uint32_t signatureOffset{0};
     uint32_t signatureSize{0};
-    const uint32_t written{appTicket->GetAppOwnershipTicketData(
+    uint32_t written{appTicket->GetAppOwnershipTicketData(
         appId,
         buffer.data(),
         static_cast<uint32_t>(buffer.size()),
@@ -679,9 +809,27 @@ std::optional<std::vector<uint8_t>> ExtractAppOwnershipTicket(
         &signatureOffset,
         &signatureSize)};
 
-    if (written == 0 || written > buffer.size()) {
-        std::cerr << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
-                  << " (own the app and have it cached locally?).\n";
+    if (written > buffer.size()) {
+        buffer.resize(written);
+        const uint32_t written2{appTicket->GetAppOwnershipTicketData(
+            appId,
+            buffer.data(),
+            static_cast<uint32_t>(buffer.size()),
+            &appIdOffset,
+            &steamIdOffset,
+            &signatureOffset,
+            &signatureSize)};
+        if (written2 == 0 || written2 > buffer.size()) {
+            std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
+                      << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
+                      << " (account may not own the app or not cached locally).\n";
+            return std::nullopt;
+        }
+        written = written2;
+    } else if (written == 0) {
+        std::cerr << "[INFO] 未能获取 AppID " << appId << " 的所有权票据 (账号可能未拥有或本地未缓存) / "
+                  << "GetAppOwnershipTicketData returned no ticket for AppID " << appId
+                  << " (account may not own the app or not cached locally).\n";
         return std::nullopt;
     }
 
@@ -703,13 +851,13 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     auto* utils{client->GetISteamUtils(pipe, kSteamUtilsInterfaceVersion)};
     auto* steamUser{client->GetISteamUser(user, pipe, kSteamUserInterfaceVersion)};
     if (!utils || !steamUser) {
-        std::cerr << "GetISteamUtils/GetISteamUser returned null.\n";
+        std::cerr << "[WARN] GetISteamUtils/GetISteamUser 返回空 / returned null.\n";
         return std::nullopt;
     }
 
     const SteamAPICall_t hCall{steamUser->RequestEncryptedAppTicket(nullptr, 0)};
     if (!hCall) {
-        std::cerr << "RequestEncryptedAppTicket failed to start for AppID " << appId << ".\n";
+        std::cerr << "[WARN] 请求 EncryptedAppTicket 启动失败 / RequestEncryptedAppTicket failed to start for AppID " << appId << ".\n";
         return std::nullopt;
     }
 
@@ -720,7 +868,7 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     int waited{0};
     while (!utils->IsAPICallCompleted(hCall, &failed)) {
         if (waited >= kMaxWaitMs) {
-            std::cerr << "Timed out waiting for EncryptedAppTicketResponse_t.\n";
+            std::cerr << "[WARN] 等待 EncryptedAppTicket 超时 / Timed out waiting for EncryptedAppTicketResponse_t.\n";
             return std::nullopt;
         }
         Sleep(kStepMs);
@@ -735,11 +883,11 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
         EncryptedAppTicketResponse_t::k_iCallback,
         &failed)};
     if (!gotResult || failed) {
-        std::cerr << "GetAPICallResult failed for EncryptedAppTicketResponse_t.\n";
+        std::cerr << "[WARN] 获取 EncryptedAppTicket 结果失败 / GetAPICallResult failed for EncryptedAppTicketResponse_t.\n";
         return std::nullopt;
     }
     if (response.m_eResult != k_EResultOK) {
-        std::cerr << "RequestEncryptedAppTicket returned EResult "
+        std::cerr << "[WARN] 请求 EncryptedAppTicket 返回状态码 / RequestEncryptedAppTicket returned EResult "
                   << static_cast<int>(response.m_eResult) << ".\n";
         return std::nullopt;
     }
@@ -748,13 +896,13 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
     uint32_t cbTicket{0};
     steamUser->GetEncryptedAppTicket(nullptr, 0, &cbTicket);
     if (cbTicket == 0) {
-        std::cerr << "Encrypted app ticket is empty.\n";
+        std::cerr << "[WARN] 加密票据为空 / Encrypted app ticket is empty.\n";
         return std::nullopt;
     }
 
     std::vector<uint8_t> buffer(cbTicket);
     if (!steamUser->GetEncryptedAppTicket(buffer.data(), static_cast<int>(buffer.size()), &cbTicket)) {
-        std::cerr << "GetEncryptedAppTicket failed.\n";
+        std::cerr << "[WARN] 获取 EncryptedAppTicket 数据失败 / GetEncryptedAppTicket failed.\n";
         return std::nullopt;
     }
 
@@ -826,7 +974,7 @@ bool WriteBinaryFile(const std::string& path, const std::vector<uint8_t>& data) 
 // Build the plain-text summary line for one ticket. Present -> the hex string,
 // absent -> "null".
 std::string TicketLine(const char* name, const std::optional<std::vector<uint8_t>>& ticket) {
-    if (!ticket) return std::string{name} + ":null\n";
+    if (!ticket || ticket->empty()) return std::string{name} + ":null\n";
     return std::string{name} + "(" + std::to_string(ticket->size()) + "bytes):"
            + ToHexString(*ticket) + "\n";
 }
@@ -846,8 +994,8 @@ bool WriteOutputs(uint32_t appId,
     }
 
     bool ok{true};
-    if (ownership) ok = WriteBinaryFile(JoinPath(dir, "appticket.bin"), *ownership) && ok;
-    if (encrypted) ok = WriteBinaryFile(JoinPath(dir, "eticket.bin"), *encrypted) && ok;
+    if (ownership && !ownership->empty()) ok = WriteBinaryFile(JoinPath(dir, "appticket.bin"), *ownership) && ok;
+    if (encrypted && !encrypted->empty()) ok = WriteBinaryFile(JoinPath(dir, "eticket.bin"), *encrypted) && ok;
 
     // Write binary depot key files (.key)
     for (const auto& dk : depotKeys) {
@@ -865,10 +1013,12 @@ bool WriteOutputs(uint32_t appId,
             size_t slash = dk.manifestFilePath.find_last_of("\\/");
             std::string fname = (slash != std::string::npos) ? dk.manifestFilePath.substr(slash + 1) : dk.manifestFilePath;
             std::string dest = JoinPath(dir, fname);
-            if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
-                copiedManifests.push_back(fname);
-            } else {
-                std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
+            if (std::find(copiedManifests.begin(), copiedManifests.end(), fname) == copiedManifests.end()) {
+                if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
+                    copiedManifests.push_back(fname);
+                } else {
+                    std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
+                }
             }
         }
     }
@@ -878,7 +1028,11 @@ bool WriteOutputs(uint32_t appId,
     for (const auto& dlc : dlcs) {
         text += "dlc(" + std::to_string(dlc.dlcId) + ")";
         if (!dlc.name.empty()) {
-            text += ":" + dlc.name;
+            std::string cleanName = dlc.name;
+            for (char& c : cleanName) {
+                if (c == '\r' || c == '\n') c = ' ';
+            }
+            text += ":" + cleanName;
         }
         text += "\n";
     }
@@ -888,7 +1042,7 @@ bool WriteOutputs(uint32_t appId,
         }
     }
     for (const auto& dk : depotKeys) {
-        if (!dk.manifestId.empty()) {
+        if (IsValidManifestId(dk.manifestId)) {
             text += "manifest(" + std::to_string(dk.depotId) + "):" + dk.manifestId + "\n";
         }
     }
@@ -949,7 +1103,11 @@ bool WriteOutputs(uint32_t appId,
             if (!alreadyHasKey) {
                 luaText += "addappid(" + std::to_string(dlc.dlcId) + ")";
                 if (!dlc.name.empty()) {
-                    luaText += " -- " + dlc.name;
+                    std::string cleanName = dlc.name;
+                    for (char& c : cleanName) {
+                        if (c == '\r' || c == '\n') c = ' ';
+                    }
+                    luaText += " -- " + cleanName;
                 }
                 luaText += "\n";
             }
@@ -959,7 +1117,7 @@ bool WriteOutputs(uint32_t appId,
     // Write manifest IDs to pin manifests (only when non-empty and valid decimal GID)
     bool hasManifests = false;
     for (const auto& dk : depotKeys) {
-        if (IsDecimal(dk.manifestId)) {
+        if (IsValidManifestId(dk.manifestId)) {
             hasManifests = true;
             break;
         }
@@ -967,21 +1125,27 @@ bool WriteOutputs(uint32_t appId,
     if (hasManifests) {
         luaText += "\n-- Manifest IDs (pinned)\n";
         for (const auto& dk : depotKeys) {
-            if (IsDecimal(dk.manifestId)) {
+            if (IsValidManifestId(dk.manifestId)) {
                 luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
             }
         }
     }
 
     luaText += "\n";
-    if (ownership) {
+    if (ownership && !ownership->empty()) {
         luaText += "-- App Ownership Ticket (AppTicket)\n";
         luaText += "setAppTicket(" + std::to_string(appId) + ", \"" + ToHexString(*ownership) + "\")\n\n";
+    } else {
+        luaText += "-- App Ownership Ticket (AppTicket)\n";
+        luaText += "-- setAppTicket(" + std::to_string(appId) + ", \"null\")\n\n";
     }
 
-    if (encrypted) {
+    if (encrypted && !encrypted->empty()) {
         luaText += "-- Encrypted App Ticket (ETicket)\n";
         luaText += "setETicket(" + std::to_string(appId) + ", \"" + ToHexString(*encrypted) + "\")\n\n";
+    } else {
+        luaText += "-- Encrypted App Ticket (ETicket)\n";
+        luaText += "-- setETicket(" + std::to_string(appId) + ", \"null\")\n\n";
     }
 
     const std::string luaPath{JoinPath(dir, std::to_string(appId) + ".lua")};
@@ -992,8 +1156,8 @@ bool WriteOutputs(uint32_t appId,
     }
 
     std::cout << "Wrote " << dir << "\\ (" << std::to_string(appId) << ".lua, tickets.txt";
-    if (ownership) std::cout << ", appticket.bin";
-    if (encrypted) std::cout << ", eticket.bin";
+    if (ownership && !ownership->empty()) std::cout << ", appticket.bin";
+    if (encrypted && !encrypted->empty()) std::cout << ", eticket.bin";
     for (const auto& dk : depotKeys) {
         if (!dk.hexKey.empty()) std::cout << ", depot_" << dk.depotId << ".key";
     }
@@ -1003,7 +1167,7 @@ bool WriteOutputs(uint32_t appId,
     std::cout << ")\n";
 
     if (!dlcs.empty()) {
-        std::cout << "[INFO] Extracted " << dlcs.size() << " owned DLC(s):\n";
+        std::cout << "[INFO] 已提取 " << dlcs.size() << " 个拥有的 DLC / Extracted " << dlcs.size() << " owned DLC(s):\n";
         for (const auto& dlc : dlcs) {
             std::cout << "       DLC " << dlc.dlcId;
             if (!dlc.name.empty()) {
@@ -1012,7 +1176,7 @@ bool WriteOutputs(uint32_t appId,
             std::cout << "\n";
         }
     } else {
-        std::cout << "[INFO] No owned DLCs found for AppID " << appId << ".\n";
+        std::cout << "[INFO] 未检测到该游戏拥有的 DLC / No owned DLCs found for AppID " << appId << ".\n";
     }
 
     size_t keyCount = 0;
@@ -1020,32 +1184,33 @@ bool WriteOutputs(uint32_t appId,
         if (!dk.hexKey.empty()) keyCount++;
     }
     if (keyCount > 0) {
-        std::cout << "[INFO] Extracted " << keyCount << " depot decryption key(s):\n";
+        std::cout << "[INFO] 已提取 " << keyCount << " 个 Depot 解密密钥 / Extracted " << keyCount << " depot decryption key(s):\n";
         for (const auto& dk : depotKeys) {
             if (!dk.hexKey.empty()) {
                 std::cout << "       Depot " << dk.depotId << ": " << dk.hexKey << "\n";
             }
         }
     } else {
-        std::cout << "[INFO] No cached depot decryption keys found in config.vdf for AppID " << appId << ".\n";
-        std::cout << "[TIP] If this game requires depot keys, start installing/updating it once in Steam to cache them, then run extract_tickets again.\n";
+        std::cout << "[INFO] 未在 config.vdf 中找到缓存的 Depot 解密密钥 / No cached depot decryption keys found in config.vdf for AppID " << appId << ".\n";
+        std::cout << "[TIP] 若该游戏需要 Depot 密钥，请在 Steam 中启动一次安装/更新以生成缓存，然后重新运行提取工具。\n"
+                  << "      If this game requires depot keys, start installing/updating it once in Steam to cache them, then run extract_tickets again.\n";
     }
 
     if (!copiedManifests.empty()) {
-        std::cout << "[INFO] Extracted " << copiedManifests.size() << " depot manifest file(s) (.manifest):\n";
+        std::cout << "[INFO] 已提取 " << copiedManifests.size() << " 个清单文件 (.manifest) / Extracted " << copiedManifests.size() << " depot manifest file(s) (.manifest):\n";
         for (const auto& mName : copiedManifests) {
             std::cout << "       " << mName << "\n";
         }
     } else {
-        std::cout << "[INFO] No cached .manifest files found in depotcache for AppID " << appId << ".\n";
+        std::cout << "[INFO] 未在 depotcache 中找到缓存的清单文件 (.manifest) / No cached .manifest files found in depotcache for AppID " << appId << ".\n";
     }
 
-    std::cout << "[INFO] Ready-to-use Lua script saved to: " << luaPath << "\n";
+    std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath << "\n";
     return ok;
 }
 
 void WaitForExit() {
-    std::cout << "\nPress Enter to exit...";
+    std::cout << "\n按回车键退出... / Press Enter to exit...";
     std::string dummy;
     std::getline(std::cin, dummy);
 }
@@ -1056,13 +1221,13 @@ int Run(int argc, char** argv) {
     if (argc >= 2) {
         appId = ParseAppId(argv[1]);
         if (!appId) {
-            std::cerr << "Invalid AppID: " << argv[1] << "\n";
+            std::cerr << "[ERROR] 无效的 AppID / Invalid AppID: " << argv[1] << "\n";
             return 1;
         }
     } else {
         appId = ReadAppIdFromConsole();
         if (!appId) {
-            std::cerr << "Invalid AppID.\n";
+            std::cerr << "[ERROR] 无效的 AppID / Invalid AppID.\n";
             return 1;
         }
     }
@@ -1072,58 +1237,87 @@ int Run(int argc, char** argv) {
     const std::string appIdStr{std::to_string(*appId)};
     SetEnvironmentVariableA("SteamAppId", appIdStr.c_str());
     SetEnvironmentVariableA("SteamGameId", appIdStr.c_str());
+    SetEnvironmentVariableA("SteamOverlayGameId", appIdStr.c_str());
 
     std::string steamClientPath;
     HMODULE steamClient{LoadSteamClient64(steamClientPath)};
-    if (!steamClient) return 1;
-
-    std::cout << "Loaded " << steamClientPath << "\n";
-
-    ISteamClient* client{CreateSteamClient(steamClient)};
-    if (!client) {
-        FreeLibrary(steamClient);
-        return 1;
-    }
+    ISteamClient* client{steamClient ? CreateSteamClient(steamClient) : nullptr};
 
     HSteamPipe pipe{0};
     HSteamUser user{0};
-    if (!OpenSession(client, pipe, user)) {
-        FreeLibrary(steamClient);
-        return 1;
+    const bool sessionOpened = (client != nullptr) && OpenSession(client, pipe, user);
+
+    if (!sessionOpened) {
+        std::cout << "[WARN] Steam 未运行或未登录，已自动切换为【离线降级模式】。\n"
+                  << "       Steam is not running or not logged in; switched to [Offline Degradation Mode].\n"
+                  << "[INFO] 跳过在线凭证与授权：AppTicket、ETicket 及实时 DLC 状态将不可用。\n"
+                  << "       Skipped live credentials: AppTicket, ETicket, and live DLC query are unavailable.\n"
+                  << "[INFO] 继续扫描本地磁盘：正在提取本地缓存的 Depot 密钥、ACF 配置与清单文件...\n"
+                  << "       Continuing local scan: extracting cached depot keys, ACF configs, and manifest files...\n\n";
+    } else {
+        std::cout << "Loaded " << steamClientPath << "\n";
+        if (auto* utils{client->GetISteamUtils(pipe, kSteamUtilsInterfaceVersion)}) {
+            std::cout << "ConnectedUniverse=" << static_cast<int>(utils->GetConnectedUniverse())
+                      << " ClientAppID=" << utils->GetAppID() << "\n";
+        }
     }
 
-    if (auto* utils{client->GetISteamUtils(pipe, kSteamUtilsInterfaceVersion)}) {
-        std::cout << "ConnectedUniverse=" << static_cast<int>(utils->GetConnectedUniverse())
-                  << " ClientAppID=" << utils->GetAppID() << "\n";
+    std::optional<std::vector<uint8_t>> ownership;
+    std::optional<std::vector<uint8_t>> encrypted;
+    if (sessionOpened) {
+        ownership = ExtractAppOwnershipTicket(client, pipe, user, *appId);
+        if (ownership) PrintHex("Ownership ticket", *ownership);
+
+        encrypted = ExtractEncryptedAppTicket(client, pipe, user, *appId);
+        if (encrypted) PrintHex("Encrypted ticket", *encrypted);
     }
-
-    auto ownership{ExtractAppOwnershipTicket(client, pipe, user, *appId)};
-    if (ownership) PrintHex("Ownership ticket", *ownership);
-
-    auto encrypted{ExtractEncryptedAppTicket(client, pipe, user, *appId)};
-    if (encrypted) PrintHex("Encrypted ticket", *encrypted);
 
     auto steamPathOpt{FindSteamInstallPath()};
     std::string steamPath = steamPathOpt ? *steamPathOpt : "";
     std::vector<DlcInfo> dlcs;
-    std::vector<DepotKeyInfo> depotKeys = ExtractDepotDecryptionKeys(steamPath, *appId, client, pipe, user, dlcs);
+    std::vector<DepotKeyInfo> depotKeys = ExtractDepotDecryptionKeys(
+        steamPath, *appId, sessionOpened ? client : nullptr, pipe, user, dlcs);
 
     const bool ok{WriteOutputs(*appId, ownership, encrypted, depotKeys, dlcs)};
 
-    client->BReleaseSteamPipe(pipe);
-    FreeLibrary(steamClient);
+    if (sessionOpened && client) {
+        client->BReleaseSteamPipe(pipe);
+    }
+    if (steamClient) {
+        FreeLibrary(steamClient);
+    }
     return ok ? 0 : 1;
 }
 #endif
+
+// RAII guard for Windows console code page restoration
+struct ConsoleCodePageGuard {
+    UINT oldOutputCP{0};
+    UINT oldCP{0};
+
+    ConsoleCodePageGuard() {
+        oldOutputCP = GetConsoleOutputCP();
+        oldCP = GetConsoleCP();
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+    }
+
+    ~ConsoleCodePageGuard() {
+        SetConsoleOutputCP(oldOutputCP);
+        SetConsoleCP(oldCP);
+    }
+};
 
 } // namespace
 
 int main(int argc, char** argv) {
 #if !defined(_WIN64)
-    std::cerr << "extract_tickets must be built as a 64-bit Windows executable.\n";
+    std::cerr << "[ERROR] extract_tickets 必须编译为 64 位 Windows 程序。\n"
+              << "        extract_tickets must be built as a 64-bit Windows executable.\n";
     WaitForExit();
     return 1;
 #else
+    ConsoleCodePageGuard cpGuard;
     const int rc{Run(argc, argv)};
     WaitForExit();
     return rc;
