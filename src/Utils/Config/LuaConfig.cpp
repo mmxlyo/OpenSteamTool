@@ -820,7 +820,7 @@ namespace LuaConfig{
     }
 
     uint32_t SyncManifests(const std::string& directory, const std::string& targetDepotcacheDir) {
-        std::lock_guard<std::mutex> lock(g_manifestSyncMutex);
+        std::lock_guard<std::recursive_mutex> lock(g_manifestSyncMutex);
 
         std::string depotcache = !targetDepotcacheDir.empty() ? targetDepotcacheDir : GetSteamDepotcacheDir();
         if (depotcache.empty()) {
@@ -904,7 +904,7 @@ namespace LuaConfig{
     }
 
     bool CopyManifestToDepotcache(const std::string& manifestFilePath, const std::string& targetDepotcacheDir) {
-        std::lock_guard<std::mutex> lock(g_manifestSyncMutex);
+        std::lock_guard<std::recursive_mutex> lock(g_manifestSyncMutex);
 
         std::string depotcache = !targetDepotcacheDir.empty() ? targetDepotcacheDir : GetSteamDepotcacheDir();
         if (depotcache.empty()) return false;
