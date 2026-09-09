@@ -61,31 +61,20 @@
 - AppTicket priority: explicit tickets have the highest priority, including tickets configured by `setAppTicket` and existing cached `AppTicket` credential values. If no explicit AppTicket is available, OpenSteamTool falls back to the forged local ConfigStore ticket path.
 - SteamID priority: read cached `SteamID` first; if missing, parse from explicit `AppTicket`. On Windows, the credential store backend currently uses `HKCU\Software\Valve\Steam\Apps\<AppId>`. The Linux backend is not implemented yet.
 
-#### Extracting tickets with `extract_tickets`
+### Extracting Tickets & Config with `extract_tickets`
 
-The `extract_tickets` tool dumps the `AppTicket` and `ETicket` hex strings you need for `setAppTicket` / `setETicket`. Run it on a machine where Steam is running and logged into an account that **owns** the target game.
+The `extract_tickets` tool extracts authorization tickets (`AppTicket` / `ETicket`), owned DLCs, and cached manifest files (`*.manifest`) for games you own, generating a ready-to-use `<appid>.lua` config.
 
-1. Build the tools (see [Build](#build)); the binary lands in `build/tools/Release/extract_tickets.exe`.
-2. Run it with the target AppId (or run it with no argument and type the AppId when prompted):
-   ```powershell
-   extract_tickets.exe 1361510
-   ```
-3. It reads the Steam install path from the registry, loads `steamclient64.dll`, and writes everything into an `<appid>/` folder next to the executable:
-   - `<appid>.lua` — ready-to-use full Lua config (with `addappid`, extracted depot decryption keys, `setAppTicket`, `setETicket`, ready to place directly into `config/lua/`)
-   - `depot_<depotid>.key` — raw 32-byte depot decryption key (when cached)
-   - `appticket.bin` — raw app ownership ticket (binary)
-   - `eticket.bin` — raw encrypted app ticket (binary)
-   - `tickets.txt` — plain-text summary with keys and ticket hex strings:
-     ```
-     appid:1361510
-     depotkey(1361511):5954562e...
-     appticket(184 bytes):14000000...
-     eticket(143 bytes):...
-     ```
-   A ticket that could not be obtained is reported as `appticket:null` / `eticket:null`.
-4. The generated `<appid>.lua` is completely ready to use; you can copy it directly to your OpenSteamTool `config/lua/` directory. You can also run `ConvertTicketsToLua.bat` (or `ConvertTicketsToLua.ps1`) to batch convert existing `tickets.txt` files into `.lua` configs with keys included.
-
-> **Note:** Tickets and decryption keys are only valid when extracted from an account that **genuinely owns** the game. If you haven't downloaded the game on Steam yet, starting the install/download once will cache the depot decryption keys locally.
+* **Download**: Available from the [GitHub Actions Tools Workflow](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml).
+* **Usage**:
+  Run it while Steam is running and logged into an account that owns the target game (pass the AppId or enter when prompted):
+  ```powershell
+  extract_tickets.exe 1361510
+  ```
+* **Output** (saved in the `<appid>/` directory):
+  * `<appid>.lua` — Complete, ready-to-use config (including AppId, owned DLCs, depot keys, pinned manifests via `setManifestid`, and tickets). Copy directly to `config/lua/`.
+  * `*.manifest` — Cached depot manifest files automatically extracted for your game and DLCs.
+  * `appticket.bin` / `eticket.bin` — Raw authorization tickets.
 
 ### Stats and Achievements
 - Enable stats and achievements for unowned games.

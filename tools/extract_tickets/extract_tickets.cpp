@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -26,6 +27,12 @@ struct DepotKeyInfo {
     std::string hexKey;           // 64 hex characters (32 bytes AES key)
     std::string manifestId;       // optional manifest id
     std::string manifestFilePath; // optional full path to cached .manifest file
+};
+
+struct DlcInfo {
+    uint32_t dlcId{0};
+    std::string name;
+    bool isOwned{false};
 };
 
 bool IsDecimal(std::string_view value) {
@@ -205,8 +212,8 @@ std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath) {
 std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs,
                                   uint32_t depotId,
                                   std::string& inOutManifestId) {
-    // 1. If inOutManifestId is known, check if <depotId>_<manifestId>.manifest exists directly
-    if (!inOutManifestId.empty()) {
+    // 1. If inOutManifestId is known and valid decimal GID, check if <depotId>_<manifestId>.manifest exists directly
+    if (!inOutManifestId.empty() && IsDecimal(inOutManifestId)) {
         std::string expectedName = std::to_string(depotId) + "_" + inOutManifestId + ".manifest";
         for (const auto& dc : depotcacheDirs) {
             std::string fullPath = JoinPath(dc, expectedName);
@@ -238,7 +245,10 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
                         size_t under = fname.find('_');
                         size_t dot = fname.rfind('.');
                         if (under != std::string::npos && dot != std::string::npos && dot > under + 1) {
-                            bestManifestId = fname.substr(under + 1, dot - under - 1);
+                            std::string candidate = fname.substr(under + 1, dot - under - 1);
+                            if (IsDecimal(candidate)) {
+                                bestManifestId = candidate;
+                            }
                         }
                     }
                 }
@@ -248,7 +258,7 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
     }
 
     if (!bestPath.empty()) {
-        if (inOutManifestId.empty()) {
+        if ((inOutManifestId.empty() || !IsDecimal(inOutManifestId)) && !bestManifestId.empty()) {
             inOutManifestId = bestManifestId;
         }
         return bestPath;
@@ -313,6 +323,9 @@ void ParseAcfDepots(const std::string& acfPath,
             } else if (tokens[0] == "dlcappid") {
                 if (auto dlc = ParseAppId(tokens[1])) {
                     outDlcIds.insert(*dlc);
+                    if (outDepots.find(*dlc) == outDepots.end()) {
+                        outDepots[*dlc] = "";
+                    }
                 }
             }
         }
@@ -416,16 +429,21 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     uint32_t appId,
     ISteamClient* client,
     HSteamPipe pipe,
-    HSteamUser user) {
+    HSteamUser user,
+    std::vector<DlcInfo>& outDlcs) {
 
     std::unordered_map<uint32_t, std::string> knownDepotManifests;
     std::unordered_set<uint32_t> knownDlcIds;
+    std::map<uint32_t, DlcInfo> dlcMap;
 
     knownDepotManifests[appId] = "";
 
     if (client && pipe && user) {
         auto* apps = reinterpret_cast<ISteamApps*>(
             client->GetISteamGenericInterface(user, pipe, kSteamAppsInterfaceVersion));
+        auto* steamUser = client->GetISteamUser(user, pipe, kSteamUserInterfaceVersion);
+        uint64 steamId = steamUser ? steamUser->GetSteamID() : 0;
+
         if (apps) {
             DepotId_t depots[128]{};
             uint32_t count = apps->GetInstalledDepots(appId, depots, 128);
@@ -441,12 +459,32 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                 bool available{false};
                 char dlcName[256]{};
                 if (apps->BGetDLCDataByIndex(i, &dlcId, &available, dlcName, static_cast<int>(sizeof(dlcName))) && dlcId != 0) {
-                    knownDlcIds.insert(dlcId);
-                    DepotId_t dlcDepots[64]{};
-                    uint32_t dlcDepotCount = apps->GetInstalledDepots(dlcId, dlcDepots, 64);
-                    for (uint32_t j = 0; j < dlcDepotCount; ++j) {
-                        if (dlcDepots[j] != 0 && knownDepotManifests.find(dlcDepots[j]) == knownDepotManifests.end()) {
-                            knownDepotManifests[dlcDepots[j]] = "";
+                    bool isSubscribed = apps->BIsSubscribedApp(dlcId);
+                    bool isInstalled = apps->BIsDlcInstalled(dlcId);
+                    bool hasLicense = (steamUser && steamId != 0) ? (steamUser->UserHasLicenseForApp(steamId, dlcId) == 0) : false;
+                    bool owned = available || isSubscribed || isInstalled || hasLicense;
+
+                    if (owned && dlcId != appId) {
+                        DlcInfo& d = dlcMap[dlcId];
+                        d.dlcId = dlcId;
+                        if (d.name.empty() && dlcName[0] != '\0') {
+                            d.name = dlcName;
+                        }
+                        d.isOwned = true;
+                        knownDlcIds.insert(dlcId);
+
+                        // Ensure DLC itself is checked for depot manifests
+                        if (knownDepotManifests.find(dlcId) == knownDepotManifests.end()) {
+                            knownDepotManifests[dlcId] = "";
+                        }
+
+                        // Also query any installed depots for this DLC
+                        DepotId_t dlcDepots[64]{};
+                        uint32_t dlcDepotCount = apps->GetInstalledDepots(dlcId, dlcDepots, 64);
+                        for (uint32_t j = 0; j < dlcDepotCount; ++j) {
+                            if (dlcDepots[j] != 0 && knownDepotManifests.find(dlcDepots[j]) == knownDepotManifests.end()) {
+                                knownDepotManifests[dlcDepots[j]] = "";
+                            }
                         }
                     }
                 }
@@ -454,20 +492,41 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
         }
     }
 
-    auto libraries = FindSteamLibraryFolders(steamPath);
-    for (const auto& lib : libraries) {
-        std::string acf = JoinPath(lib, ("steamapps\\appmanifest_" + std::to_string(appId) + ".acf").c_str());
-        ParseAcfDepots(acf, knownDepotManifests, knownDlcIds);
-    }
-
-    for (uint32_t dlcId : knownDlcIds) {
+    if (!steamPath.empty()) {
+        auto libraries = FindSteamLibraryFolders(steamPath);
         for (const auto& lib : libraries) {
-            std::string acf = JoinPath(lib, ("steamapps\\appmanifest_" + std::to_string(dlcId) + ".acf").c_str());
+            std::string acf = JoinPath(lib, ("steamapps\\appmanifest_" + std::to_string(appId) + ".acf").c_str());
             ParseAcfDepots(acf, knownDepotManifests, knownDlcIds);
+        }
+
+        for (uint32_t dlcId : knownDlcIds) {
+            for (const auto& lib : libraries) {
+                std::string acf = JoinPath(lib, ("steamapps\\appmanifest_" + std::to_string(dlcId) + ".acf").c_str());
+                ParseAcfDepots(acf, knownDepotManifests, knownDlcIds);
+            }
         }
     }
 
-    auto allDepotKeys = ParseConfigVdfDepotKeys(steamPath);
+    // Any DLC found via ACF installed depots is also confirmed owned
+    for (uint32_t dlcId : knownDlcIds) {
+        if (dlcId != appId) {
+            DlcInfo& d = dlcMap[dlcId];
+            d.dlcId = dlcId;
+            d.isOwned = true;
+            if (knownDepotManifests.find(dlcId) == knownDepotManifests.end()) {
+                knownDepotManifests[dlcId] = "";
+            }
+        }
+    }
+
+    outDlcs.clear();
+    for (const auto& [id, info] : dlcMap) {
+        if (info.isOwned) {
+            outDlcs.push_back(info);
+        }
+    }
+
+    auto allDepotKeys = !steamPath.empty() ? ParseConfigVdfDepotKeys(steamPath) : std::unordered_map<uint32_t, std::string>{};
 
     std::vector<DepotKeyInfo> result;
     std::unordered_set<uint32_t> addedDepots;
@@ -512,9 +571,11 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     }
 
     // Search for cached .manifest files across all depotcache directories
-    auto depotcacheDirs = GetDepotcacheDirs(steamPath);
-    for (auto& dk : result) {
-        dk.manifestFilePath = FindDepotManifestFile(depotcacheDirs, dk.depotId, dk.manifestId);
+    if (!steamPath.empty()) {
+        auto depotcacheDirs = GetDepotcacheDirs(steamPath);
+        for (auto& dk : result) {
+            dk.manifestFilePath = FindDepotManifestFile(depotcacheDirs, dk.depotId, dk.manifestId);
+        }
     }
 
     // Remove entries that have no key, no manifest file, and no manifest ID
@@ -775,7 +836,8 @@ std::string TicketLine(const char* name, const std::optional<std::vector<uint8_t
 bool WriteOutputs(uint32_t appId,
                   const std::optional<std::vector<uint8_t>>& ownership,
                   const std::optional<std::vector<uint8_t>>& encrypted,
-                  const std::vector<DepotKeyInfo>& depotKeys) {
+                  const std::vector<DepotKeyInfo>& depotKeys,
+                  const std::vector<DlcInfo>& dlcs) {
     const std::string dir{std::to_string(appId)};
     if (!CreateDirectoryA(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         std::cerr << "Failed to create directory " << dir
@@ -813,6 +875,13 @@ bool WriteOutputs(uint32_t appId,
 
     // Build tickets.txt summary
     std::string text = "appid:" + std::to_string(appId) + "\n";
+    for (const auto& dlc : dlcs) {
+        text += "dlc(" + std::to_string(dlc.dlcId) + ")";
+        if (!dlc.name.empty()) {
+            text += ":" + dlc.name;
+        }
+        text += "\n";
+    }
     for (const auto& dk : depotKeys) {
         if (!dk.hexKey.empty()) {
             text += "depotkey(" + std::to_string(dk.depotId) + "):" + dk.hexKey + "\n";
@@ -866,6 +935,27 @@ bool WriteOutputs(uint32_t appId,
         }
     }
 
+    // Write owned DLCs
+    if (!dlcs.empty()) {
+        luaText += "\n-- Owned DLCs\n";
+        for (const auto& dlc : dlcs) {
+            bool alreadyHasKey = false;
+            for (const auto& dk : depotKeys) {
+                if (dk.depotId == dlc.dlcId && !dk.hexKey.empty()) {
+                    alreadyHasKey = true;
+                    break;
+                }
+            }
+            if (!alreadyHasKey) {
+                luaText += "addappid(" + std::to_string(dlc.dlcId) + ")";
+                if (!dlc.name.empty()) {
+                    luaText += " -- " + dlc.name;
+                }
+                luaText += "\n";
+            }
+        }
+    }
+
     // Write manifest IDs to pin manifests (only when non-empty and valid decimal GID)
     bool hasManifests = false;
     for (const auto& dk : depotKeys) {
@@ -911,6 +1001,19 @@ bool WriteOutputs(uint32_t appId,
         std::cout << ", " << mName;
     }
     std::cout << ")\n";
+
+    if (!dlcs.empty()) {
+        std::cout << "[INFO] Extracted " << dlcs.size() << " owned DLC(s):\n";
+        for (const auto& dlc : dlcs) {
+            std::cout << "       DLC " << dlc.dlcId;
+            if (!dlc.name.empty()) {
+                std::cout << ": " << dlc.name;
+            }
+            std::cout << "\n";
+        }
+    } else {
+        std::cout << "[INFO] No owned DLCs found for AppID " << appId << ".\n";
+    }
 
     size_t keyCount = 0;
     for (const auto& dk : depotKeys) {
@@ -1002,12 +1105,10 @@ int Run(int argc, char** argv) {
 
     auto steamPathOpt{FindSteamInstallPath()};
     std::string steamPath = steamPathOpt ? *steamPathOpt : "";
-    std::vector<DepotKeyInfo> depotKeys;
-    if (!steamPath.empty()) {
-        depotKeys = ExtractDepotDecryptionKeys(steamPath, *appId, client, pipe, user);
-    }
+    std::vector<DlcInfo> dlcs;
+    std::vector<DepotKeyInfo> depotKeys = ExtractDepotDecryptionKeys(steamPath, *appId, client, pipe, user, dlcs);
 
-    const bool ok{WriteOutputs(*appId, ownership, encrypted, depotKeys)};
+    const bool ok{WriteOutputs(*appId, ownership, encrypted, depotKeys, dlcs)};
 
     client->BReleaseSteamPipe(pipe);
     FreeLibrary(steamClient);

@@ -57,32 +57,20 @@
 - Prioridad de AppTicket: los tickets explícitos tienen la prioridad más alta, incluyendo los tickets configurados por `setAppTicket` y los valores de `AppTicket` ya existentes en el registro. Si no hay ningún AppTicket explícito disponible, OpenSteamTool recurre a la ruta del ticket falsificado de ConfigStore local.
 - Prioridad de SteamID: primero lee `SteamID` como `REG_SZ`(únicamente numérico); si no se encuentra, lo analiza a partir del `AppTicket` explícito.
 
-### Extracción de tickets con `extract_tickets`
-La herramienta `extract_tickets` vuelca las cadenas hexadecimales de `AppTicket` y `ETicket` que necesitas para `setAppTicket` / `setETicket`. Ejecútala en una máquina donde Steam esté abierto e iniciado sesión en una cuenta que sea **propietaria** del juego en cuestión.
+### Extracción de tickets y configuración con `extract_tickets`
 
-1. Compila las herramientas (Revisa [Build](#build)); el binario se generará en `build/tools/Release/extract_tickets.exe`.
-2. Ejecútalo pasando el AppId del juego como argumento (o ejecútalo sin argumentos e introduce el AppId cuando se te solicite):
-   ```powershell
-   extract_tickets.exe 1361510
-   ```
-3. La herramienta leerá la ruta de instalación de Steam desde el registro, cargará `steamclient64.dll` y escribirá todo dentro de una carpeta `<appid>/` junto al ejecutable:
-   - `appticket.bin` — ticket bruto de propiedad de la aplicación (binario)
-   - `eticket.bin` — ticket cifrado bruto de la aplicación (binario)
-   - `tickets.txt` — resumen en texto plano con las cadenas hexadecimales:
-     ```
-     appid:1361510
-     appticket(184 bytes):14000000...
-     eticket(143 bytes):...
-     ```
-   Si un ticket no se puede obtener, se reportará como
-   `appticket:null` / `eticket:null`.
-4. Pega las cadenas hexadecimales de `tickets.txt` en tu configuración de Lua:
-   ```lua
-   setAppTicket(1361510, "14000000...")
-   setETicket(1361510, "...")
-   ```
+La herramienta `extract_tickets` extrae tickets de autorización (`AppTicket` / `ETicket`), DLCs en posesión y archivos de manifiesto en caché (`*.manifest`) de los juegos que posees, generando una configuración `<appid>.lua` lista para usar.
 
-> **Nota:** Los tickets solo son válidos cuando se extraen de una cuenta que **realmente posee** el juego.
+* **Descarga**: Disponible en el [flujo de trabajo de GitHub Actions Tools](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml).
+* **Uso**:
+  Ejecútala mientras Steam está abierto e iniciado sesión en una cuenta propietaria del juego (indicando el AppId o introduciéndolo cuando se te solicite):
+  ```powershell
+  extract_tickets.exe 1361510
+  ```
+* **Salida** (guardada en la carpeta `<appid>/`):
+  * `<appid>.lua` — Configuración completa y lista para usar (incluye AppId, DLCs en posesión, claves de depot, manifiestos fijados con `setManifestid` y tickets). Cópiala directamente a `config/lua/`.
+  * `*.manifest` — Archivos de manifiesto de depot en caché extraídos automáticamente para tu juego y DLCs.
+  * `appticket.bin` / `eticket.bin` — Tickets de autorización brutos.
 
 ### Estadísticas y logros
 - Activa las estadísticas y los logros para los juegos que no poseas.

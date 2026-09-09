@@ -62,31 +62,20 @@
 - AppTicket 优先级：显式令牌优先级最高，包括通过 `setAppTicket` 配置的令牌和已缓存的 `AppTicket` 凭据值。若无可用显式 AppTicket，OpenSteamTool 回退到伪造的本地 ConfigStore 令牌路径
 - SteamID 优先级：优先读取缓存的 `SteamID`；若缺失，则从显式 `AppTicket` 解析。在 Windows 上，凭据存储后端当前使用 `HKCU\Software\Valve\Steam\Apps\<AppId>`。Linux 后端尚未实现
 
-#### 使用 `extract_tickets` 提取令牌
+### 使用 `extract_tickets` 提取授权与配置文件
 
-`extract_tickets` 工具会转储你需要的 `AppTicket` 和 `ETicket` 十六进制字符串，用于 `setAppTicket` / `setETicket`。在 Steam 运行并登录到**拥有**目标游戏的账户的机器上运行它。
+`extract_tickets` 工具可在拥有目标游戏的机器上提取该游戏所需的授权文件（AppTicket / ETicket）、拥有的 DLC 及清单文件（`*.manifest`），并一键生成可直接使用的 `<appid>.lua` 配置文件。
 
-1. 构建工具（参见 [构建](#构建)）；二进制文件位于 `build/tools/Release/extract_tickets.exe`
-2. 使用目标 AppId 运行它（或不带参数运行，在提示时输入 AppId）：
-   ```powershell
-   extract_tickets.exe 1361510
-   ```
-3. 它从注册表读取 Steam 安装路径，加载 `steamclient64.dll`，并将所有内容写入可执行文件旁边的 `<appid>/` 文件夹：
-   - `<appid>.lua` — 自动生成开箱即用的完整 Lua 配置文件（包含 `addappid`、提取的 Depot 解密密钥、`setAppTicket`、`setETicket`，可直接复制到 `config/lua/` 目录使用）
-   - `depot_<depotid>.key` — 原始 32 字节 Depot 解密密钥（若本地缓存存在）
-   - `appticket.bin` — 原始应用所有权令牌（二进制）
-   - `eticket.bin` — 原始加密应用令牌（二进制）
-   - `tickets.txt` — 包含密钥与令牌十六进制字符串的纯文本摘要：
-     ```
-     appid:1361510
-     depotkey(1361511):5954562e...
-     appticket(184 bytes):14000000...
-     eticket(143 bytes):...
-     ```
-   无法获取的令牌报告为 `appticket:null` / `eticket:null`
-4. 工具会自动在输出目录生成完整、可直接使用的 `<appid>.lua` 脚本；你也可以运行 `ConvertTicketsToLua.bat`（或 `ConvertTicketsToLua.ps1`）批量将已有的 `tickets.txt` 转换为包含密钥的 `.lua` 文件。
-
-> **注意：** 令牌和解密密钥仅当从**真正拥有**该游戏的账户提取时才有效。如果尚未在 Steam 下载过该游戏，在 Steam 中点击一次安装/下载即可缓存对应 Depot 的解密密钥到本地。
+* **下载地址**：可前往 [GitHub Actions Tools 页面](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml) 下载编译好的 `extract_tickets.exe`。
+* **使用方法**：
+  在 Steam 运行且登录拥有该游戏的账号后运行（传入目标 AppId 或根据提示输入）：
+  ```powershell
+  extract_tickets.exe 1361510
+  ```
+* **输出内容**（保存在 `<appid>/` 文件夹中）：
+  * `<appid>.lua` — 完整、开箱即用的配置文件（包含 AppId、拥有的 DLC、Depot 密钥、固定清单 `setManifestid` 及授权配置），直接复制到 `config/lua/` 目录即可生效。
+  * `*.manifest` — 自动从本地缓存提取的 Depot 清单文件。
+  * `appticket.bin` / `eticket.bin` — 原始授权令牌文件。
 
 ### 统计和成就
 - 为未拥有的游戏启用统计和成就
