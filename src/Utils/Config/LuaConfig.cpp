@@ -813,42 +813,10 @@ namespace LuaConfig{
     }
 
     std::string GetSteamDepotcacheDir() {
-        if (SteamInstallPath[0] != '\0') {
-            return (std::filesystem::path(SteamInstallPath) / "depotcache").lexically_normal().string();
+        if (SteamInstallPath[0] == '\0') {
+            return {};
         }
-
-        // Fallback: query registry HKCU / HKLM using Unicode APIs for full multi-language path support
-        HKEY hKey = nullptr;
-        const HKEY rootKeys[] = { HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE };
-        const wchar_t* subKeys[] = {
-            L"Software\\Valve\\Steam",
-            L"Software\\Wow6432Node\\Valve\\Steam"
-        };
-
-        for (HKEY root : rootKeys) {
-            for (const wchar_t* sub : subKeys) {
-                if (RegOpenKeyExW(root, sub, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-                    wchar_t pathBuf[1024] = {};
-                    DWORD bufSize = sizeof(pathBuf);
-                    DWORD type = REG_SZ;
-                    if (RegQueryValueExW(hKey, L"SteamPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS &&
-                        pathBuf[0] != L'\0') {
-                        RegCloseKey(hKey);
-                        return (std::filesystem::path(pathBuf) / "depotcache").lexically_normal().string();
-                    }
-                    bufSize = sizeof(pathBuf);
-                    type = REG_SZ;
-                    if (RegQueryValueExW(hKey, L"InstallPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS &&
-                        pathBuf[0] != L'\0') {
-                        RegCloseKey(hKey);
-                        return (std::filesystem::path(pathBuf) / "depotcache").lexically_normal().string();
-                    }
-                    RegCloseKey(hKey);
-                }
-            }
-        }
-
-        return {};
+        return (std::filesystem::path(SteamInstallPath) / "depotcache").lexically_normal().string();
     }
 
     uint32_t SyncManifests(const std::string& directory, const std::string& targetDepotcacheDir) {
