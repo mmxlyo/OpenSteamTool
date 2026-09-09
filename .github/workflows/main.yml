@@ -69,7 +69,7 @@ jobs:
 
             ${{ steps.changelog.outputs.changelog }}
 
-            * **extract_tickets Build / Release:** [OpenSteamTool Actions Workflow](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml)
+            ## **extract_tickets Build / Release:** [OpenSteamTool Actions Workflow](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml)
 
             ## Installation
 
