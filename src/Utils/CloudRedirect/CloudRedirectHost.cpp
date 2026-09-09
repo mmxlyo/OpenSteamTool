@@ -1,4 +1,5 @@
 #include "CloudRedirectHost.h"
+#include "dllmain.h"
 
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "Utils/Config/Config.h"

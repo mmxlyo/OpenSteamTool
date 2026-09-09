@@ -109,8 +109,8 @@ namespace
                 *phModule = reinterpret_cast<HMODULE>(client_hModule);
                 if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
                     HMODULE dummy = nullptr;
-                    oGetModuleHandleExA(dwFlags & (GET_MODULE_HANDLE_EX_FLAG_PIN),
-                                        DiversionPath, &dummy);
+                    oGetModuleHandleExA((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                        reinterpret_cast<LPCSTR>(client_hModule), &dummy);
                 }
                 return TRUE;
             }
@@ -128,9 +128,8 @@ namespace
                 *phModule = reinterpret_cast<HMODULE>(client_hModule);
                 if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
                     HMODULE dummy = nullptr;
-                    std::wstring wDivPath = std::filesystem::path(DiversionPath).wstring();
-                    oGetModuleHandleExW(dwFlags & (GET_MODULE_HANDLE_EX_FLAG_PIN),
-                                        wDivPath.c_str(), &dummy);
+                    oGetModuleHandleExW((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                        reinterpret_cast<LPCWSTR>(client_hModule), &dummy);
                 }
                 return TRUE;
             }

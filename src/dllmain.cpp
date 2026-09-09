@@ -9,6 +9,8 @@
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "OSTPlatform/include/Thread.h"
 
+#include <chrono>
+#include <thread>
 #include <windows.h>
 
 // prepare key runtime paths.
@@ -35,34 +37,72 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
     // Diversion shadow module cloning & loading:
     // Clone steamclient64.dll into bin\diversion64.dll so all hooks and patches
     // are isolated to the diversion module while original steamclient64.dll stays 100% clean.
-    std::filesystem::path diversionFsPath(DiversionPath);
-    std::error_code ec;
-    std::filesystem::create_directories(diversionFsPath.parent_path(), ec);
+    WIN32_FILE_ATTRIBUTE_DATA origAttr{}, divAttr{};
+    const bool origExists = GetFileAttributesExA(SteamclientPath, GetFileExInfoStandard, &origAttr) != 0;
+    const bool divExists  = GetFileAttributesExA(DiversionPath, GetFileExInfoStandard, &divAttr) != 0;
 
-    if (!CopyFileA(SteamclientPath, DiversionPath, FALSE)) {
-        const DWORD gle = GetLastError();
-        if (std::filesystem::exists(diversionFsPath, ec)) {
-            LOG_WARN("CopyFileA to diversion64.dll failed (err={}), reusing existing diversion file", gle);
-        } else {
-            LOG_ERROR("CopyFileA failed: {} -> {} (err={})", SteamclientPath, DiversionPath, gle);
+    bool isUpToDate = false;
+    if (origExists && divExists) {
+        if (origAttr.nFileSizeHigh == divAttr.nFileSizeHigh &&
+            origAttr.nFileSizeLow  == divAttr.nFileSizeLow &&
+            origAttr.ftLastWriteTime.dwLowDateTime  == divAttr.ftLastWriteTime.dwLowDateTime &&
+            origAttr.ftLastWriteTime.dwHighDateTime == divAttr.ftLastWriteTime.dwHighDateTime)
+        {
+            isUpToDate = true;
         }
-    } else {
-        LOG_INFO("Cloned steamclient64.dll -> {}", DiversionPath);
     }
 
-    client_hModule = OSTPlatform::DynamicLibrary::Load(DiversionPath);
+    bool copyOk = isUpToDate;
+    if (isUpToDate) {
+        LOG_DEBUG("Diversion module is already up to date ({}), skipping copy", DiversionPath);
+    } else {
+        std::filesystem::path diversionFsPath(DiversionPath);
+        std::error_code ec;
+        std::filesystem::create_directories(diversionFsPath.parent_path(), ec);
+        if (divExists && (divAttr.dwFileAttributes & FILE_ATTRIBUTE_READONLY)) {
+            SetFileAttributesA(DiversionPath, FILE_ATTRIBUTE_NORMAL);
+        }
+
+        // Retry up to 3 times in case the old Steam process is still releasing the file handle
+        constexpr int kMaxCopyRetries = 3;
+        [[maybe_unused]] DWORD gle = ERROR_SUCCESS;
+        for (int attempt = 1; attempt <= kMaxCopyRetries; ++attempt) {
+            if (CopyFileA(SteamclientPath, DiversionPath, FALSE)) {
+                copyOk = true;
+                LOG_INFO("Cloned steamclient64.dll -> {}", DiversionPath);
+                break;
+            }
+            gle = GetLastError();
+            if (attempt < kMaxCopyRetries && (gle == ERROR_SHARING_VIOLATION || gle == ERROR_ACCESS_DENIED)) {
+                Sleep(50);
+            }
+        }
+
+        if (!copyOk) {
+            LOG_WARN("CopyFileA to diversion64.dll failed after {} attempts (err={})", kMaxCopyRetries, gle);
+        }
+    }
+
+    if (copyOk) {
+        client_hModule = OSTPlatform::DynamicLibrary::Load(DiversionPath);
+        if (client_hModule) {
+            g_IsDiversionActive.store(true);
+            LOG_INFO("Loaded diversion module from {}", DiversionPath);
+        } else {
+            LOG_WARN("Load diversion module failed (path={}, err={}), falling back to real steamclient64.dll",
+                     DiversionPath, OSTPlatform::DynamicLibrary::GetLastErrorCode());
+        }
+    }
+
     if (!client_hModule) {
-        LOG_WARN("Load diversion module failed (path={}, err={}), falling back to real steamclient64.dll",
-                 DiversionPath, OSTPlatform::DynamicLibrary::GetLastErrorCode());
+        g_IsDiversionActive.store(false);
         client_hModule = OSTPlatform::DynamicLibrary::Load(SteamclientPath);
         if (!client_hModule) {
             LOG_ERROR("Load steamclient64.dll failed: {} (err={})",
                       SteamclientPath, OSTPlatform::DynamicLibrary::GetLastErrorCode());
             return false;
         }
-        LOG_INFO("Loaded fallback steamclient64.dll from {}", SteamclientPath);
-    } else {
-        LOG_INFO("Loaded diversion module from {}", DiversionPath);
+        LOG_INFO("Loaded fallback steamclient64.dll from {} (Diversion inactive)", SteamclientPath);
     }
     
     ui_hModule = OSTPlatform::DynamicLibrary::Load(SteamUIPath);
@@ -122,7 +162,8 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     CloudRedirectHost::Initialize(SteamInstallPath);
 
     g_HooksInstalled.store(true);
-    LOG_INFO("OpenSteamTool init complete (Diversion active)");
+    LOG_INFO("OpenSteamTool init complete ({})",
+             g_IsDiversionActive.load() ? "Diversion active" : "Diversion bypassed, using original steamclient64");
     return 0;
 }
 
@@ -140,6 +181,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     else if (dwReason == DLL_PROCESS_DETACH)
     {
         g_HooksInstalled.store(false);
+        g_IsDiversionActive.store(false);
         ConfigFileWatcher::Stop();
         LuaFileWatcher::Stop();
         SteamUI::CoreUnhook();
