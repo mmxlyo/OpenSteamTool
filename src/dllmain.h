@@ -14,6 +14,8 @@
 #include <memory>
 #include <atomic>
 #include <format>
+#include <chrono>
+#include <thread>
 
 #include "Steam/Types.h"
 #include "Steam/Enums.h"

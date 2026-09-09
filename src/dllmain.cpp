@@ -9,6 +9,8 @@
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "OSTPlatform/include/Thread.h"
 
+#include <chrono>
+#include <thread>
 #include <windows.h>
 
 // Prepare key runtime paths.
@@ -94,7 +96,7 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
 
         // Retry up to 3 times in case the old Steam process is still releasing the file handle
         constexpr int kMaxCopyRetries = 3;
-        DWORD gle = ERROR_SUCCESS;
+        [[maybe_unused]] DWORD gle = ERROR_SUCCESS;
         for (int attempt = 1; attempt <= kMaxCopyRetries; ++attempt) {
             if (CopyFileA(SteamclientPath, DiversionPath, FALSE)) {
                 copyOk = true;
@@ -103,7 +105,7 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
             }
             gle = GetLastError();
             if (attempt < kMaxCopyRetries && (gle == ERROR_SHARING_VIOLATION || gle == ERROR_ACCESS_DENIED)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                Sleep(50);
             }
         }
 
