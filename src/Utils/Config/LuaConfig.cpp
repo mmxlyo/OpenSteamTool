@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -62,6 +63,7 @@ namespace LuaConfig{
     static std::vector<AppId_t> g_pendingRemovals;
     static std::vector<AppId_t> g_pendingAdditions;
     constexpr uint64_t kDefaultStatSteamId = 76561198028121353ULL;
+    static std::mutex g_manifestSyncMutex;
 
     // Case-insensitive function registry: lowercase name → C function
     static std::unordered_map<std::string, lua_CFunction> g_func_registry;
@@ -782,6 +784,11 @@ namespace LuaConfig{
                 toUnload.push_back(filePath);
             }
         }
+        for (const auto& [filePath, _] : g_fileParseSequence) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
 
         std::sort(toUnload.begin(), toUnload.end());
         toUnload.erase(std::unique(toUnload.begin(), toUnload.end()), toUnload.end());
@@ -807,7 +814,7 @@ namespace LuaConfig{
 
     std::string GetSteamDepotcacheDir() {
         if (SteamInstallPath[0] != '\0') {
-            return (std::filesystem::path(SteamInstallPath) / "depotcache").string();
+            return (std::filesystem::path(SteamInstallPath) / "depotcache").lexically_normal().string();
         }
 
         // Fallback: query registry HKCU / HKLM using Unicode APIs for full multi-language path support
@@ -821,14 +828,20 @@ namespace LuaConfig{
         for (HKEY root : rootKeys) {
             for (const wchar_t* sub : subKeys) {
                 if (RegOpenKeyExW(root, sub, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-                    wchar_t pathBuf[MAX_PATH] = {};
+                    wchar_t pathBuf[1024] = {};
                     DWORD bufSize = sizeof(pathBuf);
                     DWORD type = REG_SZ;
-                    if ((RegQueryValueExW(hKey, L"SteamPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS ||
-                         RegQueryValueExW(hKey, L"InstallPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS) &&
+                    if (RegQueryValueExW(hKey, L"SteamPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS &&
                         pathBuf[0] != L'\0') {
                         RegCloseKey(hKey);
-                        return (std::filesystem::path(pathBuf) / "depotcache").string();
+                        return (std::filesystem::path(pathBuf) / "depotcache").lexically_normal().string();
+                    }
+                    bufSize = sizeof(pathBuf);
+                    type = REG_SZ;
+                    if (RegQueryValueExW(hKey, L"InstallPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS &&
+                        pathBuf[0] != L'\0') {
+                        RegCloseKey(hKey);
+                        return (std::filesystem::path(pathBuf) / "depotcache").lexically_normal().string();
                     }
                     RegCloseKey(hKey);
                 }
@@ -839,6 +852,8 @@ namespace LuaConfig{
     }
 
     uint32_t SyncManifests(const std::string& directory, const std::string& targetDepotcacheDir) {
+        std::lock_guard<std::mutex> lock(g_manifestSyncMutex);
+
         std::string depotcache = !targetDepotcacheDir.empty() ? targetDepotcacheDir : GetSteamDepotcacheDir();
         if (depotcache.empty()) {
             LOG_MANIFEST_WARN("SyncManifests: Steam depotcache directory could not be resolved");
@@ -921,6 +936,8 @@ namespace LuaConfig{
     }
 
     bool CopyManifestToDepotcache(const std::string& manifestFilePath, const std::string& targetDepotcacheDir) {
+        std::lock_guard<std::mutex> lock(g_manifestSyncMutex);
+
         std::string depotcache = !targetDepotcacheDir.empty() ? targetDepotcacheDir : GetSteamDepotcacheDir();
         if (depotcache.empty()) return false;
 
@@ -1126,6 +1143,9 @@ namespace LuaConfig{
             rememberTracked(filePath);
         }
         for (const auto& [filePath, _] : g_fileManifestOverrides) {
+            rememberTracked(filePath);
+        }
+        for (const auto& [filePath, _] : g_fileParseSequence) {
             rememberTracked(filePath);
         }
 
