@@ -63,7 +63,7 @@ namespace LuaConfig{
     static std::vector<AppId_t> g_pendingRemovals;
     static std::vector<AppId_t> g_pendingAdditions;
     constexpr uint64_t kDefaultStatSteamId = 76561198028121353ULL;
-    static std::mutex g_manifestSyncMutex;
+    static std::recursive_mutex g_manifestSyncMutex;
 
     // Case-insensitive function registry: lowercase name → C function
     static std::unordered_map<std::string, lua_CFunction> g_func_registry;

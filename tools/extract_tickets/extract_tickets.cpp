@@ -866,10 +866,10 @@ bool WriteOutputs(uint32_t appId,
         }
     }
 
-    // Write manifest IDs to pin manifests
+    // Write manifest IDs to pin manifests (only when non-empty and valid decimal GID)
     bool hasManifests = false;
     for (const auto& dk : depotKeys) {
-        if (!dk.manifestId.empty()) {
+        if (IsDecimal(dk.manifestId)) {
             hasManifests = true;
             break;
         }
@@ -877,7 +877,7 @@ bool WriteOutputs(uint32_t appId,
     if (hasManifests) {
         luaText += "\n-- Manifest IDs (pinned)\n";
         for (const auto& dk : depotKeys) {
-            if (!dk.manifestId.empty()) {
+            if (IsDecimal(dk.manifestId)) {
                 luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
             }
         }
