@@ -2,6 +2,7 @@
 #define DLLMAIN_H
 
 #include "OSTPlatform/include/DynamicLibrary.h"
+#include "OSTPlatform/include/Encoding.h"
 
 #include <string>
 #include <fstream>
@@ -34,7 +35,7 @@ inline OSTPlatform::DynamicLibrary::ModuleHandle ui_hModule = nullptr;
 inline std::atomic<bool> g_HooksInstalled{false};
 inline std::atomic<bool> g_IsDiversionActive{false};
 
-inline constexpr size_t kRuntimePathCapacity = 260;
+inline constexpr size_t kRuntimePathCapacity = 1024;
 
 inline char SteamInstallPath[kRuntimePathCapacity] = {};
 inline char SteamclientPath[kRuntimePathCapacity]  = {};
@@ -49,10 +50,12 @@ inline bool IsPortableMode() {
         return false;
     }
     std::error_code ec;
-    if (std::filesystem::equivalent(DllDir, SteamInstallPath, ec)) {
+    if (std::filesystem::equivalent(OSTPlatform::Encoding::PathFromUtf8(DllDir),
+                                    OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath), ec)) {
         return false;
     }
-    return _stricmp(DllDir, SteamInstallPath) != 0;
+    return _wcsicmp(OSTPlatform::Encoding::Utf8ToWide(DllDir).c_str(),
+                    OSTPlatform::Encoding::Utf8ToWide(SteamInstallPath).c_str()) != 0;
 }
 
 inline const char* GetStorageDirectory() {

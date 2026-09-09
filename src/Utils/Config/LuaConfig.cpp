@@ -1,4 +1,5 @@
 #include "dllmain.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Http.h"
 #include "OSTPlatform/include/Numbers.h"
 #include "Utils/Config/LuaConfig.h"
@@ -722,7 +723,8 @@ namespace LuaConfig{
 
     // ── per-file unload ────────────────────────────────────────
     void UnloadFile(const std::string& rawFilePath) {
-        std::string filePath = std::filesystem::path(rawFilePath).lexically_normal().string();
+        std::string filePath = OSTPlatform::Encoding::PathToUtf8(
+            OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal());
         auto depotsIt = g_fileDepots.find(filePath);
         auto manifestIt = g_fileManifestOverrides.find(filePath);
         if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end()) return;
@@ -762,12 +764,17 @@ namespace LuaConfig{
     }
 
     static bool StartsWithCaseInsensitive(std::string_view str, std::string_view prefix) {
-        if (str.size() < prefix.size()) return false;
-        return _strnicmp(str.data(), prefix.data(), prefix.size()) == 0;
+        if (prefix.empty()) return true;
+        if (str.empty()) return false;
+        std::wstring wideStr = OSTPlatform::Encoding::Utf8ToWide(str);
+        std::wstring widePrefix = OSTPlatform::Encoding::Utf8ToWide(prefix);
+        if (wideStr.size() < widePrefix.size()) return false;
+        return _wcsnicmp(wideStr.c_str(), widePrefix.c_str(), widePrefix.size()) == 0;
     }
 
     uint32_t UnloadDirectory(const std::string& rawDirPath) {
-        std::string dirPath = std::filesystem::path(rawDirPath).lexically_normal().string();
+        std::string dirPath = OSTPlatform::Encoding::PathToUtf8(
+            OSTPlatform::Encoding::PathFromUtf8(rawDirPath).lexically_normal());
         if (dirPath.empty()) return 0;
         if (dirPath.back() != '\\' && dirPath.back() != '/') {
             dirPath += '\\';
@@ -816,7 +823,8 @@ namespace LuaConfig{
         if (SteamInstallPath[0] == '\0') {
             return {};
         }
-        return (std::filesystem::path(SteamInstallPath) / "depotcache").lexically_normal().string();
+        return OSTPlatform::Encoding::PathToUtf8(
+            (OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "depotcache").lexically_normal());
     }
 
     uint32_t SyncManifests(const std::string& directory, const std::string& targetDepotcacheDir) {
@@ -829,14 +837,17 @@ namespace LuaConfig{
         }
 
         std::error_code ec;
-        if (!std::filesystem::exists(directory, ec) || !std::filesystem::is_directory(directory, ec))
+        auto dirPath = OSTPlatform::Encoding::PathFromUtf8(directory);
+        auto depotcachePath = OSTPlatform::Encoding::PathFromUtf8(depotcache);
+
+        if (!std::filesystem::exists(dirPath, ec) || !std::filesystem::is_directory(dirPath, ec))
             return 0;
 
-        if (!std::filesystem::exists(depotcache, ec)) {
-            std::filesystem::create_directories(depotcache, ec);
+        if (!std::filesystem::exists(depotcachePath, ec)) {
+            std::filesystem::create_directories(depotcachePath, ec);
             if (ec) {
                 LOG_MANIFEST_WARN("SyncManifests: failed to create depotcache dir '{}' ({})",
-                                  depotcache, ec.message());
+                                  OSTPlatform::Encoding::PathToUtf8(depotcachePath), ec.message());
                 return 0;
             }
         }
@@ -844,55 +855,62 @@ namespace LuaConfig{
         uint32_t copiedCount = 0;
         uint32_t skippedCount = 0;
 
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(
-                 directory, std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (ec) break;
-            if (!entry.is_regular_file(ec)) continue;
+        try {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                     dirPath, std::filesystem::directory_options::skip_permission_denied, ec)) {
+                if (ec) break;
+                if (!entry.is_regular_file(ec)) continue;
 
-            // Skip zero-byte/incomplete source manifests
-            if (entry.file_size(ec) == 0) continue;
+                // Skip zero-byte/incomplete source manifests
+                if (entry.file_size(ec) == 0) continue;
 
-            std::string ext = entry.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
-                return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            });
-            if (ext != ".manifest") continue;
+                std::string ext = OSTPlatform::Encoding::PathToUtf8(entry.path().extension());
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                });
+                if (ext != ".manifest") continue;
 
-            std::filesystem::path destPath = std::filesystem::path(depotcache) / entry.path().filename();
+                std::filesystem::path destPath = depotcachePath / entry.path().filename();
 
-            // Skip if destination already exists and is non-empty
-            if (std::filesystem::exists(destPath, ec) && std::filesystem::file_size(destPath, ec) > 0) {
-                if (std::filesystem::equivalent(entry.path(), destPath, ec)) {
+                // Skip if destination already exists and is non-empty
+                if (std::filesystem::exists(destPath, ec) && std::filesystem::file_size(destPath, ec) > 0) {
+                    if (std::filesystem::equivalent(entry.path(), destPath, ec)) {
+                        continue;
+                    }
+                    LOG_MANIFEST_DEBUG("SyncManifests: skipped existing manifest '{}'",
+                                       OSTPlatform::Encoding::PathToUtf8(destPath.filename()));
+                    ++skippedCount;
                     continue;
                 }
-                LOG_MANIFEST_DEBUG("SyncManifests: skipped existing manifest '{}'", destPath.filename().string());
-                ++skippedCount;
-                continue;
-            }
 
-            // Retry on temporary file sharing locks (e.g. while being extracted)
-            bool copied = false;
-            constexpr int kMaxRetries = 3;
-            for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
-                ec.clear();
-                if (std::filesystem::copy_file(entry.path(), destPath, std::filesystem::copy_options::overwrite_existing, ec)) {
-                    copied = true;
-                    break;
+                // Retry on temporary file sharing locks (e.g. while being extracted)
+                bool copied = false;
+                constexpr int kMaxRetries = 3;
+                for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
+                    ec.clear();
+                    if (std::filesystem::copy_file(entry.path(), destPath, std::filesystem::copy_options::overwrite_existing, ec)) {
+                        copied = true;
+                        break;
+                    }
+                    if (attempt < kMaxRetries &&
+                        (ec.value() == ERROR_SHARING_VIOLATION || ec.value() == ERROR_ACCESS_DENIED)) {
+                        Sleep(50);
+                    }
                 }
-                if (attempt < kMaxRetries &&
-                    (ec.value() == ERROR_SHARING_VIOLATION || ec.value() == ERROR_ACCESS_DENIED)) {
-                    Sleep(50);
-                }
-            }
 
-            if (copied) {
-                LOG_MANIFEST_INFO("SyncManifests: copied manifest '{}' -> '{}'",
-                                  entry.path().filename().string(), destPath.string());
-                ++copiedCount;
-            } else {
-                LOG_MANIFEST_WARN("SyncManifests: failed to copy manifest '{}' -> '{}' ({})",
-                                  entry.path().filename().string(), destPath.string(), ec.message());
+                if (copied) {
+                    LOG_MANIFEST_INFO("SyncManifests: copied manifest '{}' -> '{}'",
+                                      OSTPlatform::Encoding::PathToUtf8(entry.path().filename()),
+                                      OSTPlatform::Encoding::PathToUtf8(destPath));
+                    ++copiedCount;
+                } else {
+                    LOG_MANIFEST_WARN("SyncManifests: failed to copy manifest '{}' -> '{}' ({})",
+                                      OSTPlatform::Encoding::PathToUtf8(entry.path().filename()),
+                                      OSTPlatform::Encoding::PathToUtf8(destPath), ec.message());
+                }
             }
+        } catch (const std::exception& ex) {
+            LOG_MANIFEST_WARN("SyncManifests exception: {}", ex.what());
         }
 
         if (copiedCount > 0 || skippedCount > 0) {
@@ -910,32 +928,34 @@ namespace LuaConfig{
         if (depotcache.empty()) return false;
 
         std::error_code ec;
-        std::filesystem::path src(manifestFilePath);
+        std::filesystem::path src = OSTPlatform::Encoding::PathFromUtf8(manifestFilePath);
         if (!std::filesystem::exists(src, ec) || !std::filesystem::is_regular_file(src, ec))
             return false;
 
         // Skip zero-byte/incomplete source manifests
         if (std::filesystem::file_size(src, ec) == 0) return false;
 
-        std::string ext = src.extension().string();
+        std::string ext = OSTPlatform::Encoding::PathToUtf8(src.extension());
         std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         });
         if (ext != ".manifest") return false;
 
-        if (!std::filesystem::exists(depotcache, ec)) {
-            std::filesystem::create_directories(depotcache, ec);
+        std::filesystem::path depotcachePath = OSTPlatform::Encoding::PathFromUtf8(depotcache);
+        if (!std::filesystem::exists(depotcachePath, ec)) {
+            std::filesystem::create_directories(depotcachePath, ec);
             if (ec) return false;
         }
 
-        std::filesystem::path dest = std::filesystem::path(depotcache) / src.filename();
+        std::filesystem::path dest = depotcachePath / src.filename();
 
         // Skip if destination already exists and is non-empty
         if (std::filesystem::exists(dest, ec) && std::filesystem::file_size(dest, ec) > 0) {
             if (std::filesystem::equivalent(src, dest, ec)) {
                 return false;
             }
-            LOG_MANIFEST_DEBUG("CopyManifestToDepotcache: skipped existing manifest '{}'", dest.filename().string());
+            LOG_MANIFEST_DEBUG("CopyManifestToDepotcache: skipped existing manifest '{}'",
+                               OSTPlatform::Encoding::PathToUtf8(dest.filename()));
             return false;
         }
 
@@ -945,7 +965,8 @@ namespace LuaConfig{
             ec.clear();
             if (std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing, ec)) {
                 LOG_MANIFEST_INFO("CopyManifestToDepotcache: copied manifest '{}' -> '{}'",
-                                  src.filename().string(), dest.string());
+                                  OSTPlatform::Encoding::PathToUtf8(src.filename()),
+                                  OSTPlatform::Encoding::PathToUtf8(dest));
                 return true;
             }
             if (attempt < kMaxRetries &&
@@ -955,7 +976,7 @@ namespace LuaConfig{
         }
 
         LOG_MANIFEST_WARN("CopyManifestToDepotcache: failed to copy manifest '{}' ({})",
-                          src.filename().string(), ec.message());
+                          OSTPlatform::Encoding::PathToUtf8(src.filename()), ec.message());
         return false;
     }
 
@@ -963,21 +984,26 @@ namespace LuaConfig{
         std::vector<std::string> files;
 
         std::error_code ec;
-        if (!std::filesystem::exists(directory, ec) || !std::filesystem::is_directory(directory, ec))
+        std::filesystem::path dirPath = OSTPlatform::Encoding::PathFromUtf8(directory);
+        if (!std::filesystem::exists(dirPath, ec) || !std::filesystem::is_directory(dirPath, ec))
             return files;
 
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(
-                 directory, std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (ec) break;
-            if (!entry.is_regular_file(ec)) continue;
+        try {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                     dirPath, std::filesystem::directory_options::skip_permission_denied, ec)) {
+                if (ec) break;
+                if (!entry.is_regular_file(ec)) continue;
 
-            std::string ext = entry.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
-                return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            });
-            if (ext != ".lua") continue;
+                std::string ext = OSTPlatform::Encoding::PathToUtf8(entry.path().extension());
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                });
+                if (ext != ".lua") continue;
 
-            files.push_back(entry.path().lexically_normal().string());
+                files.push_back(OSTPlatform::Encoding::PathToUtf8(entry.path().lexically_normal()));
+            }
+        } catch (const std::exception& ex) {
+            LOG_PACKAGE_WARN("CollectLuaFiles exception: {}", ex.what());
         }
         std::sort(files.begin(), files.end());
         return files;
@@ -987,16 +1013,17 @@ namespace LuaConfig{
     void ParseFile(const std::string& rawFilePath) {
         if (!Initialize()) return;
 
-        std::string filePath = std::filesystem::path(rawFilePath).lexically_normal().string();
+        std::filesystem::path path = OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal();
+        std::string filePath = OSTPlatform::Encoding::PathToUtf8(path);
+        std::string filenameUtf8 = OSTPlatform::Encoding::PathToUtf8(path.filename());
 
         // Remove old entries from this file before re-parsing.
         UnloadFile(filePath);
         g_currentFile = filePath;
 
-        std::filesystem::path path(filePath);
         std::ifstream file(path);
         if (!file) {
-            LOG_WARN("ParseFile: failed to open {}", path.filename().string());
+            LOG_WARN("ParseFile: failed to open {}", filenameUtf8);
             g_currentFile.clear();
             return;
         }
@@ -1017,33 +1044,47 @@ namespace LuaConfig{
             g_fileMtime[filePath] = mtime;
         }
 
-        std::string chunk, line;
-        int lineNo = 0;
-        while (std::getline(file, line)) {
-            ++lineNo;
-            if (!chunk.empty()) chunk += '\n';
-            chunk += line;
-
-            lua_settop(g_lua_state, 0);
-            int rc = luaL_loadstring(g_lua_state, chunk.c_str());
-            if (rc == LUA_OK) {
-                if (lua_pcall(g_lua_state, 0, 0, 0) != LUA_OK) {
-                    const char* err = lua_tostring(g_lua_state, -1);
-                    LOG_WARN("{}:{}: {}", path.filename().string(), lineNo,
-                             err ? err : "unknown");
+        try {
+            std::string chunk, line;
+            int lineNo = 0;
+            while (std::getline(file, line)) {
+                ++lineNo;
+                // Strip UTF-8 BOM if present on the first line
+                if (lineNo == 1 && line.size() >= 3 &&
+                    static_cast<unsigned char>(line[0]) == 0xEF &&
+                    static_cast<unsigned char>(line[1]) == 0xBB &&
+                    static_cast<unsigned char>(line[2]) == 0xBF) {
+                    line.erase(0, 3);
                 }
-                chunk.clear();
-            } else if (rc == LUA_ERRSYNTAX) {
-                lua_pop(g_lua_state, 1);
-            } else {
-                const char* err = lua_tostring(g_lua_state, -1);
-                LOG_WARN("{}:{}: {}", path.filename().string(), lineNo, err ? err : "unknown");
-                lua_pop(g_lua_state, 1);
-                chunk.clear();
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+                if (!chunk.empty()) chunk += '\n';
+                chunk += line;
+
+                lua_settop(g_lua_state, 0);
+                int rc = luaL_loadstring(g_lua_state, chunk.c_str());
+                if (rc == LUA_OK) {
+                    if (lua_pcall(g_lua_state, 0, 0, 0) != LUA_OK) {
+                        const char* err = lua_tostring(g_lua_state, -1);
+                        LOG_WARN("{}:{}: {}", filenameUtf8, lineNo,
+                                 err ? err : "unknown");
+                    }
+                    chunk.clear();
+                } else if (rc == LUA_ERRSYNTAX) {
+                    lua_pop(g_lua_state, 1);
+                } else {
+                    const char* err = lua_tostring(g_lua_state, -1);
+                    LOG_WARN("{}:{}: {}", filenameUtf8, lineNo, err ? err : "unknown");
+                    lua_pop(g_lua_state, 1);
+                    chunk.clear();
+                }
             }
-        }
-        if (!chunk.empty()) {
-            LOG_WARN("{}: incomplete statement at end of file", path.filename().string());
+            if (!chunk.empty()) {
+                LOG_WARN("{}: incomplete statement at end of file", filenameUtf8);
+            }
+        } catch (const std::exception& ex) {
+            LOG_WARN("ParseFile exception in {}: {}", filenameUtf8, ex.what());
         }
 
         // Check for manifest code functions after parsing.

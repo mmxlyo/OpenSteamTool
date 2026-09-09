@@ -3,6 +3,7 @@
 #ifdef OPENSTEAMTOOL_LOGGING_ENABLED
 
 #include "OSTPlatform/include/DynamicLibrary.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Log.h"
 #include "Utils/Config/Config.h"
 #include <atomic>
@@ -26,8 +27,18 @@ namespace {
 
     std::shared_ptr<spdlog::logger> MakeLogger(const std::string& dir,
                                                 const std::string& name) {
-        auto path = std::filesystem::path(dir) / (name + ".log");
-        auto logger = spdlog::basic_logger_mt(name, path.string(), /*truncate=*/true);
+        auto path = OSTPlatform::Encoding::PathFromUtf8(dir) / (name + ".log");
+        std::string filename;
+#if defined(_WIN32)
+        try {
+            filename = path.string();
+        } catch (...) {
+            filename = OSTPlatform::Encoding::PathToUtf8(path);
+        }
+#else
+        filename = OSTPlatform::Encoding::PathToUtf8(path);
+#endif
+        auto logger = spdlog::basic_logger_mt(name, filename, /*truncate=*/true);
         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [tid=%t] [%s:%# %!()] %v");
         logger->flush_on(spdlog::level::trace);
         return logger;
@@ -80,8 +91,10 @@ namespace Log {
         try {
             auto dir = OSTPlatform::DynamicLibrary::GetModuleDirectory(selfModule);
             if (dir.empty()) dir = ".";
-            auto logDir = (dir / "opensteamtool").string();
-            std::filesystem::create_directories(logDir);
+            auto logDirPath = dir / "opensteamtool";
+            std::error_code ec;
+            std::filesystem::create_directories(logDirPath, ec);
+            auto logDir = OSTPlatform::Encoding::PathToUtf8(logDirPath);
             Main = MakeLogger(logDir, "main");
             Main->set_level(spdlog::level::trace);  // early boot: log everything
             LOG_INFO("Log initialised at {}", logDir);
@@ -98,7 +111,8 @@ namespace Log {
             const Config::LogLevel configLevel = Config::GetLogLevel();
             auto lvl = ToSpdlog(configLevel);
 
-            std::filesystem::create_directories(logDir);
+            std::error_code ec;
+            std::filesystem::create_directories(OSTPlatform::Encoding::PathFromUtf8(logDir), ec);
             SetLoggerLevel(Main, lvl);
 
             auto initOne = [&](std::shared_ptr<spdlog::logger>& logger, const char* name) {

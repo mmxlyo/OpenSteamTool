@@ -1,5 +1,6 @@
 #include "include/Hash.h"
 
+#include "include/Encoding.h"
 #include "include/Log.h"
 
 #include <windows.h>
@@ -23,7 +24,7 @@ std::string Sha256OfFile(const std::filesystem::path& path) {
                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
         OSTP_LOG_WARN("Sha256OfFile: CreateFileW failed for '{}' (error={})",
-                      path.string(), GetLastError());
+                      Encoding::PathToUtf8(path), GetLastError());
         return {};
     }
 
@@ -81,7 +82,7 @@ std::string Sha256OfFile(const std::filesystem::path& path) {
         // would yield a valid-looking but wrong digest.
         if (!ReadFile(hFile, buf.data(), kChunk, &bytesRead, nullptr)) {
             OSTP_LOG_WARN("Sha256OfFile: ReadFile failed for '{}' (error={})",
-                          path.string(), GetLastError());
+                          Encoding::PathToUtf8(path), GetLastError());
             cleanup();
             return {};
         }

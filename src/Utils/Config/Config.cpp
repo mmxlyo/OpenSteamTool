@@ -1,5 +1,6 @@
 #include "Config.h"
 #include "dllmain.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "Utils/Logging/Log.h"
 #include "Utils/SteamMetadata/ManifestClient.h"
 
@@ -41,10 +42,11 @@ namespace {
         Snapshot snapshot;
         const char* storageDir = GetStorageDirectory();
         if (storageDir && storageDir[0] != '\0') {
-            snapshot.logDir = (std::filesystem::path(storageDir) / "opensteamtool").string();
+            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(
+                OSTPlatform::Encoding::PathFromUtf8(storageDir) / "opensteamtool");
         } else {
-            std::filesystem::path p(configPath);
-            snapshot.logDir = (p.parent_path() / "opensteamtool").string();
+            std::filesystem::path p = OSTPlatform::Encoding::PathFromUtf8(configPath);
+            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(p.parent_path() / "opensteamtool");
         }
         return snapshot;
     }
@@ -85,7 +87,8 @@ namespace {
 
     LoadResult Load(const std::string& configPath) {
         Snapshot snapshot = MakeDefaultSnapshot(configPath);
-        if (!std::filesystem::exists(configPath)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(configPath), ec)) {
             LOG_INFO("Config file not found, using defaults");
             ApplyManifestProvider(snapshot.manifestProvider);
             LoadResult result = ApplySnapshotLocked(snapshot);
@@ -99,7 +102,7 @@ namespace {
         }
 
         try {
-            auto tbl = toml::parse_file(configPath);
+            auto tbl = toml::parse_file(OSTPlatform::Encoding::PathFromUtf8(configPath).wstring());
 
             // [manifest]
             if (auto manifest = tbl["manifest"].as_table()) {
@@ -126,13 +129,15 @@ namespace {
                     else if (*val == "error")       snapshot.logLevel = LogLevel::Error;
                 }
                 if (auto val = (*log)["dir"].value<std::string>()) {
-                    std::filesystem::path p(*val);
+                    std::filesystem::path p = OSTPlatform::Encoding::PathFromUtf8(*val);
                     if (p.is_relative()) {
                         const char* storageDir = GetStorageDirectory();
                         if (storageDir && storageDir[0] != '\0') {
-                            snapshot.logDir = (std::filesystem::path(storageDir) / p).string();
+                            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(
+                                OSTPlatform::Encoding::PathFromUtf8(storageDir) / p);
                         } else {
-                            snapshot.logDir = (std::filesystem::path(configPath).parent_path() / p).string();
+                            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(
+                                OSTPlatform::Encoding::PathFromUtf8(configPath).parent_path() / p);
                         }
                     } else {
                         snapshot.logDir = *val;
@@ -167,7 +172,7 @@ namespace {
 
             // [[inject]]
             if (auto arr = tbl["inject"].as_array()) {
-                std::filesystem::path configDir = std::filesystem::path(configPath).parent_path();
+                std::filesystem::path configDir = OSTPlatform::Encoding::PathFromUtf8(configPath).parent_path();
                 for (auto& node : *arr) {
                     auto t = node.as_table();
                     if (!t) continue;
@@ -175,26 +180,28 @@ namespace {
                     if (!path || path->empty()) continue;
 
                     // Relative paths resolve next to opensteamtool.toml, DLL dir, or steam.exe
-                    std::filesystem::path full = *path;
+                    std::filesystem::path full = OSTPlatform::Encoding::PathFromUtf8(*path);
                     if (full.is_relative()) {
                         std::filesystem::path candidate = configDir / full;
-                        if (std::filesystem::exists(candidate)) {
+                        std::error_code ec;
+                        if (std::filesystem::exists(candidate, ec)) {
                             full = candidate;
-                        } else if (DllDir[0] != '\0' && std::filesystem::exists(std::filesystem::path(DllDir) / full)) {
-                            full = std::filesystem::path(DllDir) / full;
-                        } else if (SteamInstallPath[0] != '\0' && std::filesystem::exists(std::filesystem::path(SteamInstallPath) / full)) {
-                            full = std::filesystem::path(SteamInstallPath) / full;
+                        } else if (DllDir[0] != '\0' && std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(DllDir) / full, ec)) {
+                            full = OSTPlatform::Encoding::PathFromUtf8(DllDir) / full;
+                        } else if (SteamInstallPath[0] != '\0' && std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / full, ec)) {
+                            full = OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / full;
                         } else {
                             full = candidate;
                         }
                     }
-                    if (!std::filesystem::exists(full)) {
-                        LOG_WARN("inject dll not found: {}", full.string());
+                    std::error_code ec;
+                    if (!std::filesystem::exists(full, ec)) {
+                        LOG_WARN("inject dll not found: {}", OSTPlatform::Encoding::PathToUtf8(full));
                         continue;
                     }
 
                     InjectDll dll;
-                    dll.path = full.string();
+                    dll.path = OSTPlatform::Encoding::PathToUtf8(full);
                     if (auto val = (*t)["when_cmdline"].value<std::string>()) dll.whenCmdline = *val;
                     if (auto val = (*t)["all_games"].value<bool>())           dll.allGames   = *val;
                     if (auto ids = (*t)["when_appids"].as_array())

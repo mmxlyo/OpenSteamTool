@@ -1,5 +1,6 @@
 #include "PatternLoader.h"
 #include "dllmain.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Memory.h"
 #include "OSTPlatform/include/Numbers.h"
 #include "Utils/Logging/Log.h"
@@ -189,7 +190,7 @@ bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& d
         PatternMap map = ParsePatternString(r.body, &parseErr);
         if (!map.empty()) {
             LOG_INFO("PatternLoader: loaded {} patterns for {} ({})",
-                     map.size(), component, r.fromCache ? "cache fallback" : "remote");
+                     map.size(), component, r.fromCache ? "cache" : "remote");
             g_moduleMaps[module] = std::move(map);
             return true;
         }
@@ -198,7 +199,8 @@ bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& d
     }
 
     // Total failure — popup + disable module's hooks.
-    std::string dllName = fs::path(dllPath).filename().string();
+    std::string dllName = OSTPlatform::Encoding::PathToUtf8(
+        OSTPlatform::Encoding::PathFromUtf8(dllPath).filename());
     std::string sha     = r.sha256.empty() ? "(hash failed)" : r.sha256;
     ShowDownloadFailedPopup(dllName, sha, component);
     g_failedModules.insert(module);

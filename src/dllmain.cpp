@@ -7,6 +7,7 @@
 #include "Utils/SteamMetadata/PatternLoader.h"
 #include "Utils/SteamMetadata/SteamDiagnostics.h"
 #include "OSTPlatform/include/DynamicLibrary.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Thread.h"
 
 #include <chrono>
@@ -19,10 +20,14 @@
 // loaded from the portable DLL directory or fallback to Steam's installation directory.
 bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 {
+    using OSTPlatform::Encoding::PathFromUtf8;
+    using OSTPlatform::Encoding::PathToUtf8;
+    using OSTPlatform::Encoding::Utf8ToWide;
+
     // 1. Locate Steam's actual install directory (where steam.exe and steamclient64.dll reside).
     // Injected into steam.exe: GetModuleDirectory(nullptr) returns the directory of steam.exe.
     auto steamExeDir = OSTPlatform::DynamicLibrary::GetModuleDirectory(nullptr);
-    std::string steamPath = steamExeDir.string();
+    std::string steamPath = PathToUtf8(steamExeDir);
     if (steamPath.empty()) {
         steamPath = OSTPlatform::DynamicLibrary::GetCurrentDirectoryPath();
     }
@@ -35,7 +40,7 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
 
     // 2. Locate OpenSteamTool DLL directory (portable mode support).
     auto dllDir = OSTPlatform::DynamicLibrary::GetModuleDirectory(selfModule);
-    std::string dllPath = dllDir.string();
+    std::string dllPath = PathToUtf8(dllDir);
     if (dllPath.empty()) {
         dllPath = steamPath;
     }
@@ -44,33 +49,35 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
 
     // 3. Resolve config and lua directory:
     // Check DllDir first (portable folder), fallback to SteamInstallPath.
-    std::string tomlPath = (std::filesystem::path(DllDir) / "opensteamtool.toml").string();
-    if (!std::filesystem::exists(tomlPath)) {
-        std::string steamToml = (std::filesystem::path(SteamInstallPath) / "opensteamtool.toml").string();
-        if (std::filesystem::exists(steamToml) || dllPath.empty()) {
-            tomlPath = steamToml;
+    std::filesystem::path tomlFs = PathFromUtf8(DllDir) / "opensteamtool.toml";
+    std::string tomlPath = PathToUtf8(tomlFs);
+    if (!std::filesystem::exists(tomlFs)) {
+        std::filesystem::path steamTomlFs = PathFromUtf8(SteamInstallPath) / "opensteamtool.toml";
+        if (std::filesystem::exists(steamTomlFs) || dllPath.empty()) {
+            tomlPath = PathToUtf8(steamTomlFs);
         }
     }
     sprintf_s(ConfigPath, kRuntimePathCapacity, "%s", tomlPath.c_str());
 
-    std::string luaPath;
+    std::filesystem::path luaFs;
     if (IsPortableMode()) {
-        luaPath = (std::filesystem::path(DllDir) / "config" / "lua").string();
-        std::error_code ec;
-        std::filesystem::create_directories(luaPath, ec);
+        luaFs = PathFromUtf8(DllDir) / "config" / "lua";
     } else {
-        luaPath = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
-        std::error_code ec;
-        std::filesystem::create_directories(luaPath, ec);
+        luaFs = PathFromUtf8(SteamInstallPath) / "config" / "lua";
     }
+    std::error_code ec;
+    std::filesystem::create_directories(luaFs, ec);
+    std::string luaPath = PathToUtf8(luaFs);
     sprintf_s(LuaDir, kRuntimePathCapacity, "%s", luaPath.c_str());
 
     // 4. Diversion shadow module cloning & loading:
     // Clone steamclient64.dll into bin\diversion64.dll so all hooks and patches
     // are isolated to the diversion module while original steamclient64.dll stays 100% clean.
     WIN32_FILE_ATTRIBUTE_DATA origAttr{}, divAttr{};
-    const bool origExists = GetFileAttributesExA(SteamclientPath, GetFileExInfoStandard, &origAttr) != 0;
-    const bool divExists  = GetFileAttributesExA(DiversionPath, GetFileExInfoStandard, &divAttr) != 0;
+    std::wstring wideSteamclientPath = Utf8ToWide(SteamclientPath);
+    std::wstring wideDiversionPath   = Utf8ToWide(DiversionPath);
+    const bool origExists = GetFileAttributesExW(wideSteamclientPath.c_str(), GetFileExInfoStandard, &origAttr) != 0;
+    const bool divExists  = GetFileAttributesExW(wideDiversionPath.c_str(), GetFileExInfoStandard, &divAttr) != 0;
 
     bool isUpToDate = false;
     if (origExists && divExists) {
@@ -87,18 +94,18 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
     if (isUpToDate) {
         LOG_DEBUG("Diversion module is already up to date ({}), skipping copy", DiversionPath);
     } else {
-        std::filesystem::path diversionFsPath(DiversionPath);
-        std::error_code ec;
-        std::filesystem::create_directories(diversionFsPath.parent_path(), ec);
+        std::filesystem::path diversionFsPath = PathFromUtf8(DiversionPath);
+        std::error_code ecDir;
+        std::filesystem::create_directories(diversionFsPath.parent_path(), ecDir);
         if (divExists && (divAttr.dwFileAttributes & FILE_ATTRIBUTE_READONLY)) {
-            SetFileAttributesA(DiversionPath, FILE_ATTRIBUTE_NORMAL);
+            SetFileAttributesW(wideDiversionPath.c_str(), FILE_ATTRIBUTE_NORMAL);
         }
 
         // Retry up to 3 times in case the old Steam process is still releasing the file handle
         constexpr int kMaxCopyRetries = 3;
         [[maybe_unused]] DWORD gle = ERROR_SUCCESS;
         for (int attempt = 1; attempt <= kMaxCopyRetries; ++attempt) {
-            if (CopyFileA(SteamclientPath, DiversionPath, FALSE)) {
+            if (CopyFileW(wideSteamclientPath.c_str(), wideDiversionPath.c_str(), FALSE)) {
                 copyOk = true;
                 LOG_INFO("Cloned steamclient64.dll -> {}", DiversionPath);
                 break;
@@ -110,12 +117,12 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
         }
 
         if (!copyOk) {
-            LOG_WARN("CopyFileA to diversion64.dll failed after {} attempts (err={})", kMaxCopyRetries, gle);
+            LOG_WARN("CopyFileW to diversion64.dll failed after {} attempts (err={})", kMaxCopyRetries, gle);
         }
     }
 
     if (copyOk) {
-        client_hModule = OSTPlatform::DynamicLibrary::Load(DiversionPath);
+        client_hModule = OSTPlatform::DynamicLibrary::Load(PathFromUtf8(DiversionPath));
         if (client_hModule) {
             g_IsDiversionActive.store(true);
             LOG_INFO("Loaded diversion module from {}", DiversionPath);
@@ -127,7 +134,7 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
 
     if (!client_hModule) {
         g_IsDiversionActive.store(false);
-        client_hModule = OSTPlatform::DynamicLibrary::Load(SteamclientPath);
+        client_hModule = OSTPlatform::DynamicLibrary::Load(PathFromUtf8(SteamclientPath));
         if (!client_hModule) {
             LOG_ERROR("Load steamclient64.dll failed: {} (err={})",
                       SteamclientPath, OSTPlatform::DynamicLibrary::GetLastErrorCode());
@@ -136,7 +143,7 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
         LOG_INFO("Loaded fallback steamclient64.dll from {} (Diversion inactive)", SteamclientPath);
     }
 
-    ui_hModule = OSTPlatform::DynamicLibrary::Load(SteamUIPath);
+    ui_hModule = OSTPlatform::DynamicLibrary::Load(PathFromUtf8(SteamUIPath));
     if (!ui_hModule) {
         LOG_ERROR("Load failed for steamui.dll: err={}", OSTPlatform::DynamicLibrary::GetLastErrorCode());
         return false;
@@ -179,8 +186,9 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     watchDirs.push_back(std::string(LuaDir));
     // In portable mode, also watch Steam's config/lua if it already exists
     if (IsPortableMode()) {
-        std::string steamLua = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
-        if (std::filesystem::exists(steamLua) && steamLua != std::string(LuaDir)) {
+        std::string steamLua = OSTPlatform::Encoding::PathToUtf8(
+            OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua");
+        if (std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(steamLua)) && steamLua != std::string(LuaDir)) {
             watchDirs.push_back(steamLua);
         }
     }
