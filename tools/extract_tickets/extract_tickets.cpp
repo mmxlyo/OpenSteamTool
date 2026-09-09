@@ -866,7 +866,7 @@ bool WriteOutputs(uint32_t appId,
         }
     }
 
-    // Write manifest reference if available
+    // Write manifest IDs to pin manifests
     bool hasManifests = false;
     for (const auto& dk : depotKeys) {
         if (!dk.manifestId.empty()) {
@@ -875,10 +875,10 @@ bool WriteOutputs(uint32_t appId,
         }
     }
     if (hasManifests) {
-        luaText += "\n-- Manifest IDs (reference)\n";
+        luaText += "\n-- Manifest IDs (pinned)\n";
         for (const auto& dk : depotKeys) {
             if (!dk.manifestId.empty()) {
-                luaText += "-- setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+                luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
             }
         }
     }

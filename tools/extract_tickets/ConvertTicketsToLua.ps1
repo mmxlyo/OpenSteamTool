@@ -91,6 +91,7 @@ foreach ($f in $files) {
     $appTicket = ""
     $eTicket = ""
     $depotKeys = @{}
+    $manifests = @{}
 
     foreach ($line in $lines) {
         $l = $line.Trim()
@@ -98,6 +99,8 @@ foreach ($f in $files) {
             $appId = $matches[1]
         } elseif ($l -match '^depotkey\((\d+)\)\s*:\s*([0-9a-fA-F]{64})') {
             $depotKeys[$matches[1]] = $matches[2]
+        } elseif ($l -match '^manifest\((\d+)\)\s*:\s*(\d+)') {
+            $manifests[$matches[1]] = $matches[2]
         } elseif ($l -match '^appticket[^:]*:\s*([0-9a-fA-F]+)') {
             $appTicket = $matches[1]
         } elseif ($l -match '^eticket[^:]*:\s*([0-9a-fA-F]+)') {
@@ -153,6 +156,15 @@ foreach ($f in $files) {
         }
     }
     $luaContent += ""
+
+    if ($manifests.Count -gt 0) {
+        $luaContent += "-- Manifest IDs (pinned)"
+        foreach ($dId in ($manifests.Keys | Sort-Object { [uint32]$_ })) {
+            $luaContent += ("setManifestid(" + $dId + ', "' + $manifests[$dId] + '")')
+            Write-Host ("  [Manifest] Depot " + $dId + " -> " + $manifests[$dId]) -ForegroundColor Green
+        }
+        $luaContent += ""
+    }
 
     if (![string]::IsNullOrEmpty($appTicket)) {
         $luaContent += "-- App Ownership Ticket (AppTicket)"
