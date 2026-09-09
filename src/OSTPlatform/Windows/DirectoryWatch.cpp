@@ -34,6 +34,7 @@ struct Watch::Impl {
     OVERLAPPED overlapped{};
     std::vector<char> buffer;
     bool readPending = false;
+    bool watchSubtree = false;
 
     void Close() {
         if (dir) {
@@ -44,6 +45,7 @@ struct Watch::Impl {
         overlapped = {};
         buffer.clear();
         readPending = false;
+        watchSubtree = false;
         directory.clear();
     }
 };
@@ -53,8 +55,9 @@ Watch::~Watch() = default;
 Watch::Watch(Watch&&) noexcept = default;
 Watch& Watch::operator=(Watch&&) noexcept = default;
 
-bool Watch::Open(const std::string& directory, uint32_t bufferSize) {
+bool Watch::Open(const std::string& directory, uint32_t bufferSize, bool watchSubtree) {
     impl_->Close();
+    impl_->watchSubtree = watchSubtree;
 
     impl_->event.Reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     if (!impl_->event) {
@@ -94,12 +97,15 @@ bool Watch::IssueRead() {
     impl_->overlapped.hEvent = event;
 
     DWORD dummy = 0;
+    DWORD notifyFilter = FILE_NOTIFY_CHANGE_FILE_NAME |
+                         FILE_NOTIFY_CHANGE_DIR_NAME |
+                         FILE_NOTIFY_CHANGE_LAST_WRITE;
     if (!ReadDirectoryChangesW(
             impl_->dir.get(),
             impl_->buffer.data(),
             static_cast<DWORD>(impl_->buffer.size()),
-            FALSE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+            impl_->watchSubtree ? TRUE : FALSE,
+            notifyFilter,
             &dummy,
             &impl_->overlapped,
             nullptr)) {

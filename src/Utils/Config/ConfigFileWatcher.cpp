@@ -5,6 +5,7 @@
 #include "Utils/Config/ConfigFileWatcher.h"
 #include "Utils/Logging/Log.h"
 #include "OSTPlatform/include/DirectoryWatch.h"
+#include "dllmain.h"
 
 #include <atomic>
 #include <cctype>
@@ -48,6 +49,12 @@ bool ContainsConfigChange(
 std::vector<std::string> BuildLuaWatchDirs() {
     std::vector<std::string> watchDirs = Config::GetLuaPaths();
     watchDirs.push_back(g_defaultLuaDir);
+    if (IsPortableMode()) {
+        std::string steamLua = (std::filesystem::path(SteamInstallPath) / "config" / "lua").string();
+        if (std::filesystem::exists(steamLua) && steamLua != g_defaultLuaDir) {
+            watchDirs.push_back(steamLua);
+        }
+    }
     return watchDirs;
 }
 

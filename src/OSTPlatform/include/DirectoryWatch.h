@@ -44,7 +44,7 @@ namespace OSTPlatform::DirectoryWatch {
         Watch(const Watch&) = delete;
         Watch& operator=(const Watch&) = delete;
 
-        bool Open(const std::string& directory, uint32_t bufferSize);
+        bool Open(const std::string& directory, uint32_t bufferSize, bool watchSubtree = false);
         bool IssueRead();
         std::vector<Change> Drain();
         void Cancel();

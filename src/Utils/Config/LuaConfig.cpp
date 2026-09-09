@@ -7,8 +7,10 @@
 
 #include <lua.hpp>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <unordered_set>
@@ -712,7 +714,8 @@ namespace LuaConfig{
     }
 
     // ── per-file unload ────────────────────────────────────────
-    void UnloadFile(const std::string& filePath) {
+    void UnloadFile(const std::string& rawFilePath) {
+        std::string filePath = std::filesystem::path(rawFilePath).lexically_normal().string();
         auto depotsIt = g_fileDepots.find(filePath);
         auto manifestIt = g_fileManifestOverrides.find(filePath);
         if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end()) return;
@@ -751,6 +754,40 @@ namespace LuaConfig{
         g_fileMtime.erase(filePath);
     }
 
+    static bool StartsWithCaseInsensitive(std::string_view str, std::string_view prefix) {
+        if (str.size() < prefix.size()) return false;
+        return _strnicmp(str.data(), prefix.data(), prefix.size()) == 0;
+    }
+
+    uint32_t UnloadDirectory(const std::string& rawDirPath) {
+        std::string dirPath = std::filesystem::path(rawDirPath).lexically_normal().string();
+        if (dirPath.empty()) return 0;
+        if (dirPath.back() != '\\' && dirPath.back() != '/') {
+            dirPath += '\\';
+        }
+
+        std::vector<std::string> toUnload;
+        for (const auto& [filePath, _] : g_fileDepots) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileManifestOverrides) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+
+        std::sort(toUnload.begin(), toUnload.end());
+        toUnload.erase(std::unique(toUnload.begin(), toUnload.end()), toUnload.end());
+
+        for (const auto& filePath : toUnload) {
+            LOG_PACKAGE_INFO("UnloadDirectory: unloading file '{}' from removed dir '{}'", filePath, rawDirPath);
+            UnloadFile(filePath);
+        }
+        return static_cast<uint32_t>(toUnload.size());
+    }
+
     std::vector<AppId_t> TakePendingRemovals() {
         std::vector<AppId_t> result;
         result.swap(g_pendingRemovals);
@@ -763,6 +800,175 @@ namespace LuaConfig{
         return result;
     }
 
+    std::string GetSteamDepotcacheDir() {
+        if (SteamInstallPath[0] != '\0') {
+            return (std::filesystem::path(SteamInstallPath) / "depotcache").string();
+        }
+
+        // Fallback: query registry HKCU / HKLM using Unicode APIs for full multi-language path support
+        HKEY hKey = nullptr;
+        const HKEY rootKeys[] = { HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE };
+        const wchar_t* subKeys[] = {
+            L"Software\\Valve\\Steam",
+            L"Software\\Wow6432Node\\Valve\\Steam"
+        };
+
+        for (HKEY root : rootKeys) {
+            for (const wchar_t* sub : subKeys) {
+                if (RegOpenKeyExW(root, sub, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+                    wchar_t pathBuf[MAX_PATH] = {};
+                    DWORD bufSize = sizeof(pathBuf);
+                    DWORD type = REG_SZ;
+                    if ((RegQueryValueExW(hKey, L"SteamPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS ||
+                         RegQueryValueExW(hKey, L"InstallPath", nullptr, &type, reinterpret_cast<LPBYTE>(pathBuf), &bufSize) == ERROR_SUCCESS) &&
+                        pathBuf[0] != L'\0') {
+                        RegCloseKey(hKey);
+                        return (std::filesystem::path(pathBuf) / "depotcache").string();
+                    }
+                    RegCloseKey(hKey);
+                }
+            }
+        }
+
+        return {};
+    }
+
+    uint32_t SyncManifests(const std::string& directory, const std::string& targetDepotcacheDir) {
+        std::string depotcache = !targetDepotcacheDir.empty() ? targetDepotcacheDir : GetSteamDepotcacheDir();
+        if (depotcache.empty()) {
+            LOG_MANIFEST_WARN("SyncManifests: Steam depotcache directory could not be resolved");
+            return 0;
+        }
+
+        std::error_code ec;
+        if (!std::filesystem::exists(directory, ec) || !std::filesystem::is_directory(directory, ec))
+            return 0;
+
+        if (!std::filesystem::exists(depotcache, ec)) {
+            std::filesystem::create_directories(depotcache, ec);
+            if (ec) {
+                LOG_MANIFEST_WARN("SyncManifests: failed to create depotcache dir '{}' ({})",
+                                  depotcache, ec.message());
+                return 0;
+            }
+        }
+
+        uint32_t copiedCount = 0;
+        uint32_t skippedCount = 0;
+
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                 directory, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file(ec)) continue;
+
+            // Skip zero-byte/incomplete source manifests
+            if (entry.file_size(ec) == 0) continue;
+
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            });
+            if (ext != ".manifest") continue;
+
+            std::filesystem::path destPath = std::filesystem::path(depotcache) / entry.path().filename();
+
+            // Skip if destination already exists and is non-empty
+            if (std::filesystem::exists(destPath, ec) && std::filesystem::file_size(destPath, ec) > 0) {
+                if (std::filesystem::equivalent(entry.path(), destPath, ec)) {
+                    continue;
+                }
+                LOG_MANIFEST_DEBUG("SyncManifests: skipped existing manifest '{}'", destPath.filename().string());
+                ++skippedCount;
+                continue;
+            }
+
+            // Retry on temporary file sharing locks (e.g. while being extracted)
+            bool copied = false;
+            constexpr int kMaxRetries = 3;
+            for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
+                ec.clear();
+                if (std::filesystem::copy_file(entry.path(), destPath, std::filesystem::copy_options::overwrite_existing, ec)) {
+                    copied = true;
+                    break;
+                }
+                if (attempt < kMaxRetries &&
+                    (ec.value() == ERROR_SHARING_VIOLATION || ec.value() == ERROR_ACCESS_DENIED)) {
+                    Sleep(50);
+                }
+            }
+
+            if (copied) {
+                LOG_MANIFEST_INFO("SyncManifests: copied manifest '{}' -> '{}'",
+                                  entry.path().filename().string(), destPath.string());
+                ++copiedCount;
+            } else {
+                LOG_MANIFEST_WARN("SyncManifests: failed to copy manifest '{}' -> '{}' ({})",
+                                  entry.path().filename().string(), destPath.string(), ec.message());
+            }
+        }
+
+        if (copiedCount > 0 || skippedCount > 0) {
+            LOG_MANIFEST_INFO("SyncManifests: {} manifest(s) copied, {} duplicate(s) skipped from '{}' to '{}'",
+                              copiedCount, skippedCount, directory, depotcache);
+        }
+
+        return copiedCount;
+    }
+
+    bool CopyManifestToDepotcache(const std::string& manifestFilePath, const std::string& targetDepotcacheDir) {
+        std::string depotcache = !targetDepotcacheDir.empty() ? targetDepotcacheDir : GetSteamDepotcacheDir();
+        if (depotcache.empty()) return false;
+
+        std::error_code ec;
+        std::filesystem::path src(manifestFilePath);
+        if (!std::filesystem::exists(src, ec) || !std::filesystem::is_regular_file(src, ec))
+            return false;
+
+        // Skip zero-byte/incomplete source manifests
+        if (std::filesystem::file_size(src, ec) == 0) return false;
+
+        std::string ext = src.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        });
+        if (ext != ".manifest") return false;
+
+        if (!std::filesystem::exists(depotcache, ec)) {
+            std::filesystem::create_directories(depotcache, ec);
+            if (ec) return false;
+        }
+
+        std::filesystem::path dest = std::filesystem::path(depotcache) / src.filename();
+
+        // Skip if destination already exists and is non-empty
+        if (std::filesystem::exists(dest, ec) && std::filesystem::file_size(dest, ec) > 0) {
+            if (std::filesystem::equivalent(src, dest, ec)) {
+                return false;
+            }
+            LOG_MANIFEST_DEBUG("CopyManifestToDepotcache: skipped existing manifest '{}'", dest.filename().string());
+            return false;
+        }
+
+        // Retry on temporary file sharing locks
+        constexpr int kMaxRetries = 3;
+        for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
+            ec.clear();
+            if (std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing, ec)) {
+                LOG_MANIFEST_INFO("CopyManifestToDepotcache: copied manifest '{}' -> '{}'",
+                                  src.filename().string(), dest.string());
+                return true;
+            }
+            if (attempt < kMaxRetries &&
+                (ec.value() == ERROR_SHARING_VIOLATION || ec.value() == ERROR_ACCESS_DENIED)) {
+                Sleep(50);
+            }
+        }
+
+        LOG_MANIFEST_WARN("CopyManifestToDepotcache: failed to copy manifest '{}' ({})",
+                          src.filename().string(), ec.message());
+        return false;
+    }
+
     static std::vector<std::string> CollectLuaFiles(const std::string& directory) {
         std::vector<std::string> files;
 
@@ -770,18 +976,28 @@ namespace LuaConfig{
         if (!std::filesystem::exists(directory, ec) || !std::filesystem::is_directory(directory, ec))
             return files;
 
-        for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                 directory, std::filesystem::directory_options::skip_permission_denied, ec)) {
             if (ec) break;
-            if (!entry.is_regular_file()) continue;
-            if (entry.path().extension() != ".lua") continue;
-            files.push_back(entry.path().string());
+            if (!entry.is_regular_file(ec)) continue;
+
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            });
+            if (ext != ".lua") continue;
+
+            files.push_back(entry.path().lexically_normal().string());
         }
+        std::sort(files.begin(), files.end());
         return files;
     }
 
     // ── single-file parser ──────────────────────────────────────
-    void ParseFile(const std::string& filePath) {
+    void ParseFile(const std::string& rawFilePath) {
         if (!Initialize()) return;
+
+        std::string filePath = std::filesystem::path(rawFilePath).lexically_normal().string();
 
         // Remove old entries from this file before re-parsing.
         UnloadFile(filePath);
@@ -864,6 +1080,8 @@ namespace LuaConfig{
     void ParseDirectory(const std::string& directory) {
         if (!Initialize()) return;
 
+        SyncManifests(directory);
+
         for (const auto& filePath : CollectLuaFiles(directory)) {
             ParseFile(filePath);
         }
@@ -875,6 +1093,10 @@ namespace LuaConfig{
 
     void ReloadDirectories(const std::vector<std::string>& directories, bool clearPendingAdditions) {
         if (!Initialize()) return;
+
+        for (const auto& directory : directories) {
+            SyncManifests(directory);
+        }
 
         std::unordered_set<std::string> activeFiles;
         std::vector<std::string> orderedFiles;
