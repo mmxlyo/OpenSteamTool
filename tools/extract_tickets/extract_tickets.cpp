@@ -27,6 +27,7 @@ struct DepotKeyInfo {
     std::string hexKey;           // 64 hex characters (32 bytes AES key)
     std::string manifestId;       // optional manifest id
     std::string manifestFilePath; // optional full path to cached .manifest file
+    uint32_t dlcId{0};            // 0 for base game, or DLC AppID if associated with a DLC
 };
 
 struct DlcInfo {
@@ -165,26 +166,6 @@ std::optional<std::string> FindSteamInstallPath() {
     return std::nullopt;
 }
 
-std::optional<std::vector<uint8_t>> HexStringToBytes(std::string_view hex) {
-    if (hex.size() % 2 != 0) return std::nullopt;
-    std::vector<uint8_t> bytes;
-    bytes.reserve(hex.size() / 2);
-
-    auto hexVal = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-    };
-
-    for (size_t i = 0; i < hex.size(); i += 2) {
-        int hi = hexVal(hex[i]);
-        int lo = hexVal(hex[i + 1]);
-        if (hi < 0 || lo < 0) return std::nullopt;
-        bytes.push_back(static_cast<uint8_t>((hi << 4) | lo));
-    }
-    return bytes;
-}
 
 std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
     std::vector<std::string> libraries;
@@ -328,7 +309,8 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
 
 void ParseAcfDepots(const std::string& acfPath,
                     std::unordered_map<uint32_t, std::string>& outDepots,
-                    std::unordered_set<uint32_t>& outDlcIds) {
+                    std::unordered_set<uint32_t>& outDlcIds,
+                    std::unordered_map<uint32_t, uint32_t>& outDepotToDlc) {
     std::ifstream file(acfPath);
     if (!file) return;
 
@@ -402,6 +384,9 @@ void ParseAcfDepots(const std::string& acfPath,
                     if (outDepots.find(currentDepotId) == outDepots.end()) {
                         outDepots[currentDepotId] = "";
                     }
+                    if (outDepotToDlc.find(currentDepotId) == outDepotToDlc.end()) {
+                        outDepotToDlc[currentDepotId] = 0;
+                    }
                 }
             } else if (tokens.size() >= 2 && currentDepotId != 0) {
                 if (_stricmp(tokens[0].c_str(), "manifest") == 0) {
@@ -409,6 +394,8 @@ void ParseAcfDepots(const std::string& acfPath,
                 } else if (_stricmp(tokens[0].c_str(), "dlcappid") == 0) {
                     if (auto dlc = ParseAppId(tokens[1])) {
                         outDlcIds.insert(*dlc);
+                        outDepotToDlc[currentDepotId] = *dlc;
+                        outDepotToDlc[*dlc] = *dlc;
                         if (outDepots.find(*dlc) == outDepots.end()) {
                             outDepots[*dlc] = "";
                         }
@@ -540,9 +527,11 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
 
     std::unordered_map<uint32_t, std::string> knownDepotManifests;
     std::unordered_set<uint32_t> knownDlcIds;
+    std::unordered_map<uint32_t, uint32_t> depotToDlc;
     std::map<uint32_t, DlcInfo> dlcMap;
 
     knownDepotManifests[appId] = "";
+    depotToDlc[appId] = 0;
 
     if (client && pipe && user) {
         auto* apps = reinterpret_cast<ISteamApps*>(
@@ -555,10 +544,16 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
 
         if (apps) {
             DepotId_t depots[128]{};
-            uint32_t count = apps->GetInstalledDepots(appId, depots, 128);
-            for (uint32_t i = 0; i < count; ++i) {
-                if (depots[i] != 0 && knownDepotManifests.find(depots[i]) == knownDepotManifests.end()) {
-                    knownDepotManifests[depots[i]] = "";
+            uint32_t count = apps->GetInstalledDepots(appId, depots, static_cast<uint32_t>(std::size(depots)));
+            uint32_t safeCount = std::min(count, static_cast<uint32_t>(std::size(depots)));
+            for (uint32_t i = 0; i < safeCount; ++i) {
+                if (depots[i] != 0) {
+                    if (knownDepotManifests.find(depots[i]) == knownDepotManifests.end()) {
+                        knownDepotManifests[depots[i]] = "";
+                    }
+                    if (depotToDlc.find(depots[i]) == depotToDlc.end()) {
+                        depotToDlc[depots[i]] = 0;
+                    }
                 }
             }
 
@@ -571,7 +566,9 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                     bool isSubscribed = apps->BIsSubscribedApp(dlcId);
                     bool isInstalled = apps->BIsDlcInstalled(dlcId);
                     bool hasLicense = (steamUser && steamId != 0) ? (steamUser->UserHasLicenseForApp(steamId, dlcId) == 0) : false;
-                    bool owned = available || isSubscribed || isInstalled || hasLicense;
+                    // Note: 'available' in BGetDLCDataByIndex indicates whether the DLC is published on Steam store,
+                    // NOT whether the current account owns it. Only include DLCs actually owned, subscribed, or installed.
+                    bool owned = isSubscribed || hasLicense || isInstalled;
 
                     if (owned && dlcId != appId) {
                         DlcInfo& d = dlcMap[dlcId];
@@ -581,6 +578,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                         }
                         d.isOwned = true;
                         knownDlcIds.insert(dlcId);
+                        depotToDlc[dlcId] = dlcId;
 
                         // Ensure DLC itself is checked for depot manifests
                         if (knownDepotManifests.find(dlcId) == knownDepotManifests.end()) {
@@ -589,10 +587,14 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
 
                         // Also query any installed depots for this DLC
                         DepotId_t dlcDepots[64]{};
-                        uint32_t dlcDepotCount = apps->GetInstalledDepots(dlcId, dlcDepots, 64);
-                        for (uint32_t j = 0; j < dlcDepotCount; ++j) {
-                            if (dlcDepots[j] != 0 && knownDepotManifests.find(dlcDepots[j]) == knownDepotManifests.end()) {
-                                knownDepotManifests[dlcDepots[j]] = "";
+                        uint32_t dlcDepotCount = apps->GetInstalledDepots(dlcId, dlcDepots, static_cast<uint32_t>(std::size(dlcDepots)));
+                        uint32_t safeDlcCount = std::min(dlcDepotCount, static_cast<uint32_t>(std::size(dlcDepots)));
+                        for (uint32_t j = 0; j < safeDlcCount; ++j) {
+                            if (dlcDepots[j] != 0) {
+                                if (knownDepotManifests.find(dlcDepots[j]) == knownDepotManifests.end()) {
+                                    knownDepotManifests[dlcDepots[j]] = "";
+                                }
+                                depotToDlc[dlcDepots[j]] = dlcId;
                             }
                         }
                     }
@@ -605,7 +607,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
         auto libraries = FindSteamLibraryFolders(steamPath);
         for (const auto& lib : libraries) {
             std::string acf = JoinPath(lib, "steamapps\\appmanifest_" + std::to_string(appId) + ".acf");
-            ParseAcfDepots(acf, knownDepotManifests, knownDlcIds);
+            ParseAcfDepots(acf, knownDepotManifests, knownDlcIds, depotToDlc);
         }
 
         std::vector<uint32_t> dlcQueue(knownDlcIds.begin(), knownDlcIds.end());
@@ -618,7 +620,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
             for (const auto& lib : libraries) {
                 std::string acf = JoinPath(lib, "steamapps\\appmanifest_" + std::to_string(dlcId) + ".acf");
                 std::unordered_set<uint32_t> newlyFoundDlcs;
-                ParseAcfDepots(acf, knownDepotManifests, newlyFoundDlcs);
+                ParseAcfDepots(acf, knownDepotManifests, newlyFoundDlcs, depotToDlc);
                 for (uint32_t newDlc : newlyFoundDlcs) {
                     if (knownDlcIds.insert(newDlc).second) {
                         dlcQueue.push_back(newDlc);
@@ -649,13 +651,24 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
 
     auto allDepotKeys = !steamPath.empty() ? ParseConfigVdfDepotKeys(steamPath) : std::unordered_map<uint32_t, std::string>{};
 
+    auto getDlcIdForDepot = [&](uint32_t dId) -> uint32_t {
+        auto it = depotToDlc.find(dId);
+        if (it != depotToDlc.end()) return it->second;
+        for (uint32_t dlcId : knownDlcIds) {
+            if (dId == dlcId || (dlcId > 0 && dId >= dlcId && dId <= dlcId + 20)) {
+                return dlcId;
+            }
+        }
+        return 0; // base game
+    };
+
     std::vector<DepotKeyInfo> result;
     std::unordered_set<uint32_t> addedDepots;
 
     for (const auto& [dId, manifest] : knownDepotManifests) {
         auto it = allDepotKeys.find(dId);
         if (it != allDepotKeys.end() && !it->second.empty()) {
-            result.push_back({dId, it->second, manifest, ""});
+            result.push_back({dId, it->second, manifest, "", getDlcIdForDepot(dId)});
             addedDepots.insert(dId);
         }
     }
@@ -664,7 +677,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
         if (addedDepots.find(dlcId) == addedDepots.end()) {
             auto it = allDepotKeys.find(dlcId);
             if (it != allDepotKeys.end() && !it->second.empty()) {
-                result.push_back({dlcId, it->second, "", ""});
+                result.push_back({dlcId, it->second, "", "", dlcId});
                 addedDepots.insert(dlcId);
             }
         }
@@ -673,10 +686,12 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     for (const auto& [dId, key] : allDepotKeys) {
         if (addedDepots.find(dId) == addedDepots.end()) {
             bool inRange = (dId >= appId && dId <= appId + 50);
+            uint32_t matchedDlcId = 0;
             if (!inRange) {
                 for (uint32_t dlcId : knownDlcIds) {
                     if (dlcId > 0 && dId >= dlcId && dId <= dlcId + 20) {
                         inRange = true;
+                        matchedDlcId = dlcId;
                         break;
                     }
                 }
@@ -685,7 +700,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                 std::string manifest = "";
                 auto it = knownDepotManifests.find(dId);
                 if (it != knownDepotManifests.end()) manifest = it->second;
-                result.push_back({dId, key, manifest, ""});
+                result.push_back({dId, key, manifest, "", matchedDlcId ? matchedDlcId : getDlcIdForDepot(dId)});
                 addedDepots.insert(dId);
             }
         }
@@ -695,7 +710,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     // so any cached manifest files can still be discovered and extracted.
     for (const auto& [dId, manifest] : knownDepotManifests) {
         if (addedDepots.find(dId) == addedDepots.end()) {
-            result.push_back({dId, "", manifest, ""});
+            result.push_back({dId, "", manifest, "", getDlcIdForDepot(dId)});
             addedDepots.insert(dId);
         }
     }
@@ -979,8 +994,8 @@ std::string TicketLine(const char* name, const std::optional<std::vector<uint8_t
            + ToHexString(*ticket) + "\n";
 }
 
-// Everything lands in a single <appid> folder: the raw binary tickets,
-// raw depot keys, plus a plain-text summary and ready-to-use .lua script.
+// Everything lands in a single <appid> folder: the raw binary tickets (if available),
+// copied depot manifests, plus a plain-text summary and ready-to-use .lua script.
 bool WriteOutputs(uint32_t appId,
                   const std::optional<std::vector<uint8_t>>& ownership,
                   const std::optional<std::vector<uint8_t>>& encrypted,
@@ -996,15 +1011,6 @@ bool WriteOutputs(uint32_t appId,
     bool ok{true};
     if (ownership && !ownership->empty()) ok = WriteBinaryFile(JoinPath(dir, "appticket.bin"), *ownership) && ok;
     if (encrypted && !encrypted->empty()) ok = WriteBinaryFile(JoinPath(dir, "eticket.bin"), *encrypted) && ok;
-
-    // Write binary depot key files (.key)
-    for (const auto& dk : depotKeys) {
-        if (dk.hexKey.empty()) continue;
-        auto keyBytes = HexStringToBytes(dk.hexKey);
-        if (keyBytes) {
-            ok = WriteBinaryFile(JoinPath(dir, "depot_" + std::to_string(dk.depotId) + ".key"), *keyBytes) && ok;
-        }
-    }
 
     // Copy manifest files (.manifest) if found in depotcache
     std::vector<std::string> copiedManifests;
@@ -1058,79 +1064,145 @@ bool WriteOutputs(uint32_t appId,
 
     // Generate ready-to-use Lua script
     std::string luaText;
-    luaText += "-- Auto-generated by extract_tickets for AppID: " + std::to_string(appId) + "\n";
+    luaText += "-- Auto-generated by extract_tickets for AppID: " + std::to_string(appId) + "\n\n";
 
-    bool appIdHasKey = false;
+    std::unordered_set<uint32_t> ownedDlcIdSet;
+    for (const auto& dlc : dlcs) {
+        ownedDlcIdSet.insert(dlc.dlcId);
+    }
+
+    // 1. Base Game Unlocks (AppID and base game depots)
+    luaText += "-- Base Game\n";
+    const DepotKeyInfo* baseAppDk = nullptr;
     for (const auto& dk : depotKeys) {
-        if (dk.depotId == appId && !dk.hexKey.empty()) {
-            appIdHasKey = true;
+        if (dk.depotId == appId) {
+            baseAppDk = &dk;
             break;
         }
     }
 
-    if (!appIdHasKey) {
+    if (baseAppDk && !baseAppDk->hexKey.empty()) {
+        luaText += "addappid(" + std::to_string(appId) + ", 1, \"" + baseAppDk->hexKey + "\")\n";
+    } else {
         luaText += "addappid(" + std::to_string(appId) + ")\n";
     }
 
-    // Write depot decryption keys
-    bool hasKeys = false;
     for (const auto& dk : depotKeys) {
-        if (!dk.hexKey.empty()) {
-            hasKeys = true;
-            break;
-        }
-    }
-    if (hasKeys) {
-        luaText += "\n-- Depot Decryption Keys\n";
-        for (const auto& dk : depotKeys) {
+        if (dk.depotId != appId && (dk.dlcId == 0 || ownedDlcIdSet.find(dk.dlcId) == ownedDlcIdSet.end())) {
             if (!dk.hexKey.empty()) {
                 luaText += "addappid(" + std::to_string(dk.depotId) + ", 1, \"" + dk.hexKey + "\")\n";
             }
         }
     }
 
-    // Write owned DLCs
-    if (!dlcs.empty()) {
-        luaText += "\n-- Owned DLCs\n";
-        for (const auto& dlc : dlcs) {
-            bool alreadyHasKey = false;
-            for (const auto& dk : depotKeys) {
-                if (dk.depotId == dlc.dlcId && !dk.hexKey.empty()) {
-                    alreadyHasKey = true;
+    // 2. Base Game Manifests (placed right under Base Game)
+    bool hasBaseManifests = false;
+    if (baseAppDk && IsValidManifestId(baseAppDk->manifestId)) {
+        hasBaseManifests = true;
+    }
+    if (!hasBaseManifests) {
+        for (const auto& dk : depotKeys) {
+            if (dk.depotId != appId && (dk.dlcId == 0 || ownedDlcIdSet.find(dk.dlcId) == ownedDlcIdSet.end())) {
+                if (IsValidManifestId(dk.manifestId)) {
+                    hasBaseManifests = true;
                     break;
                 }
             }
-            if (!alreadyHasKey) {
-                luaText += "addappid(" + std::to_string(dlc.dlcId) + ")";
-                if (!dlc.name.empty()) {
-                    std::string cleanName = dlc.name;
-                    for (char& c : cleanName) {
-                        if (c == '\r' || c == '\n') c = ' ';
-                    }
-                    luaText += " -- " + cleanName;
-                }
-                luaText += "\n";
-            }
         }
     }
 
-    // Write manifest IDs to pin manifests (only when non-empty and valid decimal GID)
-    bool hasManifests = false;
-    for (const auto& dk : depotKeys) {
-        if (IsValidManifestId(dk.manifestId)) {
-            hasManifests = true;
-            break;
+    if (hasBaseManifests) {
+        luaText += "\n-- Base Game Manifests\n";
+        if (baseAppDk && IsValidManifestId(baseAppDk->manifestId)) {
+            luaText += "setManifestid(" + std::to_string(appId) + ", \"" + baseAppDk->manifestId + "\")\n";
         }
-    }
-    if (hasManifests) {
-        luaText += "\n-- Manifest IDs (pinned)\n";
         for (const auto& dk : depotKeys) {
-            if (IsValidManifestId(dk.manifestId)) {
-                luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+            if (dk.depotId != appId && (dk.dlcId == 0 || ownedDlcIdSet.find(dk.dlcId) == ownedDlcIdSet.end())) {
+                if (IsValidManifestId(dk.manifestId)) {
+                    luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+                }
             }
         }
     }
 
+    // 3. Owned DLCs Unlocks
+    if (!dlcs.empty()) {
+        luaText += "\n-- Owned DLCs\n";
+        for (const auto& dlc : dlcs) {
+            const DepotKeyInfo* dlcDk = nullptr;
+            for (const auto& dk : depotKeys) {
+                if (dk.depotId == dlc.dlcId) {
+                    dlcDk = &dk;
+                    break;
+                }
+            }
+
+            if (dlcDk && !dlcDk->hexKey.empty()) {
+                luaText += "addappid(" + std::to_string(dlc.dlcId) + ", 1, \"" + dlcDk->hexKey + "\")";
+            } else {
+                luaText += "addappid(" + std::to_string(dlc.dlcId) + ")";
+            }
+
+            if (!dlc.name.empty()) {
+                std::string cleanName = dlc.name;
+                for (char& c : cleanName) {
+                    if (c == '\r' || c == '\n') c = ' ';
+                }
+                luaText += " -- " + cleanName;
+            }
+            luaText += "\n";
+
+            // Any subdepots of this DLC with keys
+            for (const auto& dk : depotKeys) {
+                if (dk.dlcId == dlc.dlcId && dk.depotId != dlc.dlcId) {
+                    if (!dk.hexKey.empty()) {
+                        luaText += "addappid(" + std::to_string(dk.depotId) + ", 1, \"" + dk.hexKey + "\")\n";
+                    }
+                }
+            }
+        }
+
+        // 4. DLC Manifests (placed right under DLC unlocks)
+        bool hasDlcManifests = false;
+        for (const auto& dlc : dlcs) {
+            for (const auto& dk : depotKeys) {
+                if ((dk.depotId == dlc.dlcId || dk.dlcId == dlc.dlcId) && IsValidManifestId(dk.manifestId)) {
+                    hasDlcManifests = true;
+                    break;
+                }
+            }
+            if (hasDlcManifests) break;
+        }
+
+        if (hasDlcManifests) {
+            luaText += "\n-- DLC Manifests\n";
+            for (const auto& dlc : dlcs) {
+                // DLC itself manifest
+                for (const auto& dk : depotKeys) {
+                    if (dk.depotId == dlc.dlcId && IsValidManifestId(dk.manifestId)) {
+                        luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")";
+                        if (!dlc.name.empty()) {
+                            std::string cleanName = dlc.name;
+                            for (char& c : cleanName) {
+                                if (c == '\r' || c == '\n') c = ' ';
+                            }
+                            luaText += " -- " + cleanName;
+                        }
+                        luaText += "\n";
+                        break;
+                    }
+                }
+                // Any subdepots of this DLC with manifests
+                for (const auto& dk : depotKeys) {
+                    if (dk.dlcId == dlc.dlcId && dk.depotId != dlc.dlcId && IsValidManifestId(dk.manifestId)) {
+                        luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. App Tickets (at the very end of the file)
     luaText += "\n";
     if (ownership && !ownership->empty()) {
         luaText += "-- App Ownership Ticket (AppTicket)\n";
@@ -1142,10 +1214,10 @@ bool WriteOutputs(uint32_t appId,
 
     if (encrypted && !encrypted->empty()) {
         luaText += "-- Encrypted App Ticket (ETicket)\n";
-        luaText += "setETicket(" + std::to_string(appId) + ", \"" + ToHexString(*encrypted) + "\")\n\n";
+        luaText += "setETicket(" + std::to_string(appId) + ", \"" + ToHexString(*encrypted) + "\")\n";
     } else {
         luaText += "-- Encrypted App Ticket (ETicket)\n";
-        luaText += "-- setETicket(" + std::to_string(appId) + ", \"null\")\n\n";
+        luaText += "-- setETicket(" + std::to_string(appId) + ", \"null\")\n";
     }
 
     const std::string luaPath{JoinPath(dir, std::to_string(appId) + ".lua")};
@@ -1158,9 +1230,6 @@ bool WriteOutputs(uint32_t appId,
     std::cout << "Wrote " << dir << "\\ (" << std::to_string(appId) << ".lua, tickets.txt";
     if (ownership && !ownership->empty()) std::cout << ", appticket.bin";
     if (encrypted && !encrypted->empty()) std::cout << ", eticket.bin";
-    for (const auto& dk : depotKeys) {
-        if (!dk.hexKey.empty()) std::cout << ", depot_" << dk.depotId << ".key";
-    }
     for (const auto& mName : copiedManifests) {
         std::cout << ", " << mName;
     }
