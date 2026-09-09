@@ -101,7 +101,30 @@ Result Fetch(const Request& request)
                  request.channel, request.component, cacheDir.string(), mkdirEc.message());
     }
 
-    // 3. Try remote (mirror chain with early-out on 404).
+    // Check local cache first (pattern & IPC files are immutable per DLL SHA-256).
+    std::error_code ec;
+    if (fs::exists(cachePath, ec) && !ec) {
+        const auto sz = fs::file_size(cachePath, ec);
+        if (!ec && sz > 0) {
+            std::ifstream ifs(cachePath, std::ios::binary);
+            if (ifs) {
+                std::string buf((std::istreambuf_iterator<char>(ifs)),
+                                 std::istreambuf_iterator<char>());
+                if (!buf.empty()) {
+                    LOG_INFO("RemoteToml({}/{}): loaded from cache {}",
+                             request.channel, request.component, cachePathText);
+                    out.body = std::move(buf);
+                    out.ok = true;
+                    out.fromCache = true;
+                    return out;
+                }
+            }
+            LOG_WARN("RemoteToml({}/{}): cache file exists but failed to read or empty: {}",
+                     request.channel, request.component, cachePathText);
+        }
+    }
+
+    // 3. Cache miss -> Try remote (mirror chain with early-out on 404).
     const std::vector<std::string> urlTemplates = BuildUrlTemplates();
     OSTPlatform::Http::Result http;
     std::string lastUrl;
@@ -145,32 +168,7 @@ Result Fetch(const Request& request)
         return out;
     }
 
-    // 5. Remote failed → fall back to whatever is cached for this exact SHA.
-    if (fs::exists(cachePath)) {
-        LOG_WARN("RemoteToml({}/{}): remote failed (last URL {} HTTP {}); "
-                 "falling back to local cache {}",
-                 request.channel, request.component,
-                 lastUrl.empty() ? "<none>" : lastUrl, http.status, cachePathText);
-
-        std::ifstream ifs(cachePath, std::ios::binary);
-        if (ifs) {
-            std::string buf((std::istreambuf_iterator<char>(ifs)),
-                             std::istreambuf_iterator<char>());
-            if (!buf.empty()) {
-                out.body = std::move(buf);
-                out.ok = true;
-                out.fromCache = true;
-                return out;
-            }
-            LOG_WARN("RemoteToml({}/{}): cache file empty: {}",
-                     request.channel, request.component, cachePathText);
-        } else {
-            LOG_WARN("RemoteToml({}/{}): could not open cache file: {}",
-                     request.channel, request.component, cachePathText);
-        }
-    }
-
-    // 6. Total failure — caller handles popup / degraded mode.
+    // 5. Total failure — caller handles popup / degraded mode.
     LOG_WARN("RemoteToml({}/{}): no source available (last URL: {} HTTP {})",
              request.channel, request.component,
              lastUrl.empty() ? "<none>" : lastUrl, http.status);
