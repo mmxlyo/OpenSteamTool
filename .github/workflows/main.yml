@@ -69,6 +69,8 @@ jobs:
 
             ${{ steps.changelog.outputs.changelog }}
 
+            * **extract_tickets Build / Release:** [OpenSteamTool Actions Workflow](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml)
+
             ## Installation
 
             Download `OpenSteamTool-${{ github.event.inputs.version }}-Release.zip` (or the `-Debug` variant if you need logging to `<steam>/opensteamtool directory`).
