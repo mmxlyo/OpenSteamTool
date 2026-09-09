@@ -25,9 +25,13 @@ enum EUniverse {
     k_EUniverseMax
 };
 
-// EResult subset (steamclientpublic.h); only success is checked by name.
+// EResult subset (steamclientpublic.h).
 enum EResult {
     k_EResultOK = 1,
+    k_EResultFail = 2,
+    k_EResultNoConnection = 3,
+    k_EResultAccessDenied = 15,
+    k_EResultLimitExceeded = 25,
 };
 
 // Result delivered for ISteamUser::RequestEncryptedAppTicket (isteamuser.h).
@@ -93,6 +97,7 @@ public:
 class ISteamUser {
 public:
     virtual HSteamUser GetHSteamUser() = 0;
+    virtual bool BLoggedOn() = 0;
     // In Valve's Steamworks SDK, GetSteamID() returns CSteamID by value. Under the
     // MSVC x64 ABI for member functions, returning a class with user-defined constructors
     // requires the caller to allocate storage and pass a pointer to it in RDX (with 'this'

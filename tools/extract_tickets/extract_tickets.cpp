@@ -898,12 +898,18 @@ std::optional<std::vector<uint8_t>> ExtractEncryptedAppTicket(
         EncryptedAppTicketResponse_t::k_iCallback,
         &failed)};
     if (!gotResult || failed) {
-        std::cerr << "[WARN] 获取 EncryptedAppTicket 结果失败 / GetAPICallResult failed for EncryptedAppTicketResponse_t.\n";
+        int failureReason = utils->GetAPICallFailureReason(hCall);
+        std::cerr << "[WARN] 获取 EncryptedAppTicket 结果失败 / GetAPICallResult failed for EncryptedAppTicketResponse_t (failureReason="
+                  << failureReason << ").\n";
         return std::nullopt;
     }
     if (response.m_eResult != k_EResultOK) {
         std::cerr << "[WARN] 请求 EncryptedAppTicket 返回状态码 / RequestEncryptedAppTicket returned EResult "
-                  << static_cast<int>(response.m_eResult) << ".\n";
+                  << static_cast<int>(response.m_eResult);
+        if (response.m_eResult == k_EResultAccessDenied) {
+            std::cerr << " (AccessDenied: 当前登录账号未拥有该游戏或无权获取其凭据 / Account does not own this app or lacks permission)";
+        }
+        std::cerr << ".\n";
         return std::nullopt;
     }
 
