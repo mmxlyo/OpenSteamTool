@@ -40,7 +40,7 @@
 - 解锁任意数量未拥有的游戏
 - 解锁未拥有游戏的所有 DLC
 - 支持从 Lua 配置自动加载仓库（depot）解密密钥
-- 支持通过 `opensteamtool` / `steamrun` / `wudrm` 上游 API 自动下载 manifest（默认为 `opensteamtool`），或通过自定义 Lua 端点（参见 [通过 Lua 获取 Manifest](#通过-lua-获取-manifest)）
+- 支持通过 `manifestdex` / `opensteamtool` / `steamrun` / `wudrm` 上游 API 自动下载 manifest（默认为 `manifestdex`），或通过自定义 Lua 端点（参见 [通过 Lua 获取 Manifest](#通过-lua-获取-manifest)）
 - 支持下载需要访问令牌的保护游戏或 DLC
 - 支持绑定 manifest 以防止特定游戏被更新
 
@@ -142,8 +142,8 @@ setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用
 level = "info"
 
 [manifest]
-# 仓库 manifest 请求码的上游 API。选项："opensteamtool"、"steamrun"、"wudrm"
-url = "opensteamtool"
+# 仓库 manifest 请求码的上游 API。选项："manifestdex"、"opensteamtool"、"steamrun"、"wudrm"
+url = "manifestdex"
 
 # manifest 请求的 HTTP 超时（毫秒）
 timeout_resolve_ms = 5000

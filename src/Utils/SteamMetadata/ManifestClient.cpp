@@ -51,14 +51,14 @@ namespace ManifestClient {
     }
 
     static constexpr Provider kProviders[] = {
-        Make("opensteamtool", "https://manifest.opensteamtool.com/%llu",       ParsePlainUint),
         Make("manifestdex",   "https://manifest.manifestdex.com/%llu",         ParsePlainUint,
              L"User-Agent: ManifestDeX/1.0\r\n"),
+        Make("opensteamtool", "https://manifest.opensteamtool.com/%llu",       ParsePlainUint),
         Make("wudrm",         "http://gmrc.wudrm.com/manifest/%llu",           ParsePlainUint),
         Make("steamrun",      "https://manifest.steam.run/api/manifest/%llu",  ParseSteamRunJson),
     };
 
-    static const Provider* g_active = &kProviders[0];   // opensteamtool
+    static const Provider* g_active = &kProviders[0];   // manifestdex
     static std::mutex      g_mutex;
 
     bool SetProvider(std::string_view name) {
