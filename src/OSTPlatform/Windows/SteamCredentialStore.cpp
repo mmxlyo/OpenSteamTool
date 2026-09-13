@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -37,11 +38,17 @@ struct AppCredentialEntry {
 std::shared_mutex g_credentialMutex;
 std::unordered_map<uint32_t, AppCredentialEntry> g_credentials;
 
-std::mutex g_pathMutex;
+std::shared_mutex g_pathMutex;
 std::filesystem::path g_storageDir;
 
 std::filesystem::path GetSafeStorageDir() {
-    std::lock_guard lock(g_pathMutex);
+    {
+        std::shared_lock lock(g_pathMutex);
+        if (!g_storageDir.empty()) {
+            return g_storageDir;
+        }
+    }
+    std::unique_lock lock(g_pathMutex);
     if (!g_storageDir.empty()) {
         return g_storageDir;
     }
@@ -49,13 +56,19 @@ std::filesystem::path GetSafeStorageDir() {
     if (!exeDir.empty()) {
         g_storageDir = exeDir / "config" / "credentials";
     } else {
-        g_storageDir = std::filesystem::current_path() / "config" / "credentials";
+        std::error_code ec;
+        const auto cur = std::filesystem::current_path(ec);
+        g_storageDir = (ec ? std::filesystem::path(".") : cur) / "config" / "credentials";
     }
     return g_storageDir;
 }
 
+std::filesystem::path GetAppDirectory(uint32_t appId) {
+    return GetSafeStorageDir() / std::to_wstring(appId);
+}
+
 std::filesystem::path GetAppFilePath(uint32_t appId, std::wstring_view fileName) {
-    return GetSafeStorageDir() / std::to_wstring(appId) / fileName;
+    return GetAppDirectory(appId) / fileName;
 }
 
 bool ReadBinaryFile(const std::filesystem::path& path, std::vector<uint8_t>& out) {
@@ -77,6 +90,9 @@ bool ReadBinaryFile(const std::filesystem::path& path, std::vector<uint8_t>& out
 }
 
 bool AtomicWriteBinary(const std::filesystem::path& targetPath, const uint8_t* data, size_t size) {
+    if (size > 0 && data == nullptr) {
+        return false;
+    }
     std::error_code ec;
     std::filesystem::create_directories(targetPath.parent_path(), ec);
     if (ec) {
@@ -93,7 +109,7 @@ bool AtomicWriteBinary(const std::filesystem::path& targetPath, const uint8_t* d
         if (!out.is_open()) {
             return false;
         }
-        if (size > 0 && data != nullptr) {
+        if (size > 0) {
             out.write(reinterpret_cast<const char*>(data), size);
         }
         out.flush();
@@ -108,6 +124,41 @@ bool AtomicWriteBinary(const std::filesystem::path& targetPath, const uint8_t* d
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::filesystem::remove(tempPath, ec);
         return false;
+    }
+    return true;
+}
+
+bool BinaryFileEquals(const std::filesystem::path& path, const void* data, size_t size) {
+    if (size > 0 && data == nullptr) {
+        return false;
+    }
+    std::error_code ec;
+    const auto fileSize = std::filesystem::file_size(path, ec);
+    if (ec || fileSize != size) {
+        return false;
+    }
+    if (size == 0) {
+        return true;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+        return false;
+    }
+    constexpr size_t kChunkSize = 4096;
+    char buf[kChunkSize];
+    const char* p = reinterpret_cast<const char*>(data);
+    size_t remaining = size;
+    while (remaining > 0) {
+        const size_t chunk = std::min(remaining, kChunkSize);
+        in.read(buf, static_cast<std::streamsize>(chunk));
+        if (in.gcount() != static_cast<std::streamsize>(chunk)) {
+            return false;
+        }
+        if (std::memcmp(buf, p, chunk) != 0) {
+            return false;
+        }
+        p += chunk;
+        remaining -= chunk;
     }
     return true;
 }
@@ -133,37 +184,11 @@ bool ReadSteamIdFile(const std::filesystem::path& path, uint64_t& outSteamId) {
 }
 
 bool AtomicWriteText(const std::filesystem::path& targetPath, std::string_view text) {
-    std::error_code ec;
-    std::filesystem::create_directories(targetPath.parent_path(), ec);
-    if (ec) {
-        return false;
-    }
-
-    static std::atomic<uint64_t> s_seq{0};
-    const auto seq = s_seq.fetch_add(1, std::memory_order_relaxed);
-    const auto tid = GetCurrentThreadId();
-    const std::filesystem::path tempPath = targetPath.wstring() + L".tmp." + std::to_wstring(tid) + L"." + std::to_wstring(seq);
-
-    {
-        std::ofstream out(tempPath, std::ios::trunc);
-        if (!out.is_open()) {
-            return false;
-        }
-        out << text << "\n";
-        out.flush();
-        if (!out.good()) {
-            out.close();
-            std::filesystem::remove(tempPath, ec);
-            return false;
-        }
-    }
-
-    if (!MoveFileExW(tempPath.c_str(), targetPath.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        std::filesystem::remove(tempPath, ec);
-        return false;
-    }
-    return true;
+    std::string content;
+    content.reserve(text.size() + 2);
+    content.append(text);
+    content.append("\r\n");
+    return AtomicWriteBinary(targetPath, reinterpret_cast<const uint8_t*>(content.data()), content.size());
 }
 
 Status FromLStatus(LSTATUS status) {
@@ -193,7 +218,7 @@ const char* ToString(Status status) {
 
 void SetStorageDirectory(const std::filesystem::path& dir) {
     {
-        std::lock_guard lock(g_pathMutex);
+        std::unique_lock lock(g_pathMutex);
         g_storageDir = dir;
         std::error_code ec;
         std::filesystem::create_directories(g_storageDir, ec);
@@ -245,20 +270,52 @@ Status GetAppTicket(uint32_t appId, std::vector<uint8_t>& ticket) {
 }
 
 Status WriteAppTicket(uint32_t appId, const std::vector<uint8_t>& data) {
+    const auto file = GetAppFilePath(appId, L"AppTicket.bin");
+
+    // Fast path 1: Check in-memory cache under lock
+    bool alreadyLoadedAndEqual = false;
     {
-        std::unique_lock lock(g_credentialMutex);
-        auto& entry = g_credentials[appId];
-        entry.appTicket = data;
-        entry.appTicketLoaded = true;
+        std::shared_lock lock(g_credentialMutex);
+        auto it = g_credentials.find(appId);
+        if (it != g_credentials.end() && it->second.appTicketLoaded && it->second.appTicket == data) {
+            alreadyLoadedAndEqual = true;
+        }
     }
 
-    const auto file = GetAppFilePath(appId, L"AppTicket.bin");
-    if (AtomicWriteBinary(file, data.data(), data.size())) {
-        OSTP_LOG_INFO("SteamCredentialStore: persisted AppTicket for appid={} bytes={}", appId, data.size());
-    } else {
-        OSTP_LOG_WARN("SteamCredentialStore: failed to persist AppTicket to disk for appid={}", appId);
+    if (alreadyLoadedAndEqual) {
+        std::error_code ec;
+        if (std::filesystem::exists(file, ec)) {
+            OSTP_LOG_DEBUG("SteamCredentialStore: AppTicket unchanged (memory hit) for appid={}", appId);
+            return Status::Ok;
+        }
     }
-    return Status::Ok;
+
+    // Fast path 2: Check disk content (skip redundant atomic write on startup)
+    if (BinaryFileEquals(file, data.data(), data.size())) {
+        {
+            std::unique_lock lock(g_credentialMutex);
+            auto& entry = g_credentials[appId];
+            entry.appTicket = data;
+            entry.appTicketLoaded = true;
+        }
+        OSTP_LOG_DEBUG("SteamCredentialStore: AppTicket unchanged on disk for appid={}, skipping write", appId);
+        return Status::Ok;
+    }
+
+    // Slow path: Content changed or file missing -> Atomic disk write first
+    if (AtomicWriteBinary(file, data.data(), data.size())) {
+        {
+            std::unique_lock lock(g_credentialMutex);
+            auto& entry = g_credentials[appId];
+            entry.appTicket = data;
+            entry.appTicketLoaded = true;
+        }
+        OSTP_LOG_INFO("SteamCredentialStore: persisted AppTicket for appid={} bytes={}", appId, data.size());
+        return Status::Ok;
+    }
+
+    OSTP_LOG_WARN("SteamCredentialStore: failed to persist AppTicket to disk for appid={}", appId);
+    return Status::Failed;
 }
 
 Status GetETicket(uint32_t appId, std::vector<uint8_t>& ticket) {
@@ -298,20 +355,52 @@ Status GetETicket(uint32_t appId, std::vector<uint8_t>& ticket) {
 }
 
 Status WriteETicket(uint32_t appId, const std::vector<uint8_t>& data) {
+    const auto file = GetAppFilePath(appId, L"ETicket.bin");
+
+    // Fast path 1: Check in-memory cache under lock
+    bool alreadyLoadedAndEqual = false;
     {
-        std::unique_lock lock(g_credentialMutex);
-        auto& entry = g_credentials[appId];
-        entry.eTicket = data;
-        entry.eTicketLoaded = true;
+        std::shared_lock lock(g_credentialMutex);
+        auto it = g_credentials.find(appId);
+        if (it != g_credentials.end() && it->second.eTicketLoaded && it->second.eTicket == data) {
+            alreadyLoadedAndEqual = true;
+        }
     }
 
-    const auto file = GetAppFilePath(appId, L"ETicket.bin");
-    if (AtomicWriteBinary(file, data.data(), data.size())) {
-        OSTP_LOG_INFO("SteamCredentialStore: persisted ETicket for appid={} bytes={}", appId, data.size());
-    } else {
-        OSTP_LOG_WARN("SteamCredentialStore: failed to persist ETicket to disk for appid={}", appId);
+    if (alreadyLoadedAndEqual) {
+        std::error_code ec;
+        if (std::filesystem::exists(file, ec)) {
+            OSTP_LOG_DEBUG("SteamCredentialStore: ETicket unchanged (memory hit) for appid={}", appId);
+            return Status::Ok;
+        }
     }
-    return Status::Ok;
+
+    // Fast path 2: Check disk content (skip redundant atomic write on startup)
+    if (BinaryFileEquals(file, data.data(), data.size())) {
+        {
+            std::unique_lock lock(g_credentialMutex);
+            auto& entry = g_credentials[appId];
+            entry.eTicket = data;
+            entry.eTicketLoaded = true;
+        }
+        OSTP_LOG_DEBUG("SteamCredentialStore: ETicket unchanged on disk for appid={}, skipping write", appId);
+        return Status::Ok;
+    }
+
+    // Slow path: Content changed or file missing -> Atomic disk write first
+    if (AtomicWriteBinary(file, data.data(), data.size())) {
+        {
+            std::unique_lock lock(g_credentialMutex);
+            auto& entry = g_credentials[appId];
+            entry.eTicket = data;
+            entry.eTicketLoaded = true;
+        }
+        OSTP_LOG_INFO("SteamCredentialStore: persisted ETicket for appid={} bytes={}", appId, data.size());
+        return Status::Ok;
+    }
+
+    OSTP_LOG_WARN("SteamCredentialStore: failed to persist ETicket to disk for appid={}", appId);
+    return Status::Failed;
 }
 
 Status GetSteamId(uint32_t appId, uint64_t& steamId) {
@@ -351,20 +440,57 @@ Status GetSteamId(uint32_t appId, uint64_t& steamId) {
 }
 
 Status WriteSteamId(uint32_t appId, uint64_t steamId) {
+    if (steamId == 0) {
+        OSTP_LOG_WARN("SteamCredentialStore: rejecting attempt to write zero SteamID for appid={}", appId);
+        return Status::Failed;
+    }
+    const auto file = GetAppFilePath(appId, L"SteamID.txt");
+
+    // Fast path 1: Check in-memory cache under lock
+    bool alreadyLoadedAndEqual = false;
     {
-        std::unique_lock lock(g_credentialMutex);
-        auto& entry = g_credentials[appId];
-        entry.steamId = steamId;
-        entry.steamIdLoaded = true;
+        std::shared_lock lock(g_credentialMutex);
+        auto it = g_credentials.find(appId);
+        if (it != g_credentials.end() && it->second.steamIdLoaded && it->second.steamId == steamId) {
+            alreadyLoadedAndEqual = true;
+        }
     }
 
-    const auto file = GetAppFilePath(appId, L"SteamID.txt");
-    if (AtomicWriteText(file, std::to_string(steamId))) {
-        OSTP_LOG_INFO("SteamCredentialStore: persisted SteamID for appid={} steamid={}", appId, steamId);
-    } else {
-        OSTP_LOG_WARN("SteamCredentialStore: failed to persist SteamID to disk for appid={}", appId);
+    if (alreadyLoadedAndEqual) {
+        std::error_code ec;
+        if (std::filesystem::exists(file, ec)) {
+            OSTP_LOG_DEBUG("SteamCredentialStore: SteamID unchanged (memory hit) for appid={} steamid={}", appId, steamId);
+            return Status::Ok;
+        }
     }
-    return Status::Ok;
+
+    // Fast path 2: Check disk content (skip redundant atomic write on startup)
+    uint64_t diskSteamId = 0;
+    if (ReadSteamIdFile(file, diskSteamId) && diskSteamId == steamId) {
+        {
+            std::unique_lock lock(g_credentialMutex);
+            auto& entry = g_credentials[appId];
+            entry.steamId = steamId;
+            entry.steamIdLoaded = true;
+        }
+        OSTP_LOG_DEBUG("SteamCredentialStore: SteamID unchanged on disk for appid={} steamid={}, skipping write", appId, steamId);
+        return Status::Ok;
+    }
+
+    // Slow path: Content changed or file missing -> Atomic disk write first
+    if (AtomicWriteText(file, std::to_string(steamId))) {
+        {
+            std::unique_lock lock(g_credentialMutex);
+            auto& entry = g_credentials[appId];
+            entry.steamId = steamId;
+            entry.steamIdLoaded = true;
+        }
+        OSTP_LOG_INFO("SteamCredentialStore: persisted SteamID for appid={} steamid={}", appId, steamId);
+        return Status::Ok;
+    }
+
+    OSTP_LOG_WARN("SteamCredentialStore: failed to persist SteamID to disk for appid={}", appId);
+    return Status::Failed;
 }
 
 Status GetTicketSteamId(uint32_t appId, uint64_t& steamId) {
@@ -374,8 +500,10 @@ Status GetTicketSteamId(uint32_t appId, uint64_t& steamId) {
         if (it != g_credentials.end() && it->second.appTicketLoaded) {
             if (it->second.appTicket.size() >= kSteamIdTicketMinimumSize) {
                 std::memcpy(&steamId, it->second.appTicket.data() + 8, sizeof(uint64_t));
-                OSTP_LOG_DEBUG("SteamCredentialStore: read Ticket SteamID (memory) for appid={} steamid={}", appId, steamId);
-                return Status::Ok;
+                if (steamId != 0) {
+                    OSTP_LOG_DEBUG("SteamCredentialStore: read Ticket SteamID (memory) for appid={} steamid={}", appId, steamId);
+                    return Status::Ok;
+                }
             }
             return Status::NotFound;
         }
@@ -385,7 +513,9 @@ Status GetTicketSteamId(uint32_t appId, uint64_t& steamId) {
     const auto status = GetAppTicket(appId, ticket);
     if (status == Status::Ok && ticket.size() >= kSteamIdTicketMinimumSize) {
         std::memcpy(&steamId, ticket.data() + 8, sizeof(uint64_t));
-        return Status::Ok;
+        if (steamId != 0) {
+            return Status::Ok;
+        }
     }
     return Status::NotFound;
 }
@@ -396,7 +526,7 @@ bool RemoveCredentials(uint32_t appId) {
         g_credentials.erase(appId);
     }
     std::error_code ec;
-    const auto appDir = GetSafeStorageDir() / std::to_wstring(appId);
+    const auto appDir = GetAppDirectory(appId);
     if (!std::filesystem::exists(appDir, ec)) {
         return true;
     }
@@ -455,8 +585,9 @@ Status GetActiveUser(uint32_t& accountId, std::wstring& universe) {
         return FromLStatus(status);
     }
 
-    const size_t chars = bytes / sizeof(wchar_t);
-    rawUniverse.resize(chars > 0 ? chars - 1 : 0);
+    while (!rawUniverse.empty() && rawUniverse.back() == L'\0') {
+        rawUniverse.pop_back();
+    }
     if (rawUniverse.empty()) {
         OSTP_LOG_WARN("SteamCredentialStore: ActiveProcess Universe is empty");
         return Status::NotFound;

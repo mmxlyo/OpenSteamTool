@@ -83,6 +83,21 @@ namespace LuaConfig{
         return OSTPlatform::Numbers::ParseHexUInt8(text).value_or(0);
     }
 
+    static std::vector<uint8_t> ParseHexStringToBytes(const char* hex, size_t hexLen) {
+        std::vector<uint8_t> binary;
+        if (!hex || hexLen == 0) return binary;
+        binary.reserve((hexLen + 1) / 2);
+        for (size_t i = 0; i < hexLen; i += 2) {
+            char byteStr[3] = {
+                hex[i],
+                i + 1 < hexLen ? hex[i + 1] : '0',
+                '\0'
+            };
+            binary.push_back(ParseHexByte(byteStr));
+        }
+        return binary;
+    }
+
     static void SetActiveManifestOverride(uint64_t depotId, const ManifestOverride& override) {
         ManifestOverrides[depotId] = override;
     }
@@ -410,17 +425,7 @@ namespace LuaConfig{
 
         size_t hexLen;
         const char* hex = lua_tolstring(L, 2, &hexLen);
-
-        std::vector<uint8_t> binary;
-        binary.reserve((hexLen + 1) / 2);
-        for (size_t i = 0; i < hexLen; i += 2) {
-            char byteStr[3] = {
-                hex[i],
-                i + 1 < hexLen ? hex[i + 1] : '0',
-                '\0'
-            };
-            binary.push_back(ParseHexByte(byteStr));
-        }
+        const auto binary = ParseHexStringToBytes(hex, hexLen);
 
         if (!AppTicket::WriteAppOwnershipTicket(appId, binary))
             return luaL_error(L, "setAppTicket: failed to write credential store");
@@ -450,17 +455,7 @@ namespace LuaConfig{
 
         size_t hexLen;
         const char* hex = lua_tolstring(L, 2, &hexLen);
-
-        std::vector<uint8_t> binary;
-        binary.reserve((hexLen + 1) / 2);
-        for (size_t i = 0; i < hexLen; i += 2) {
-            char byteStr[3] = {
-                hex[i],
-                i + 1 < hexLen ? hex[i + 1] : '0',
-                '\0'
-            };
-            binary.push_back(ParseHexByte(byteStr));
-        }
+        const auto binary = ParseHexStringToBytes(hex, hexLen);
 
         if (!AppTicket::WriteEncryptedTicket(appId, binary))
             return luaL_error(L, "setETicket: failed to write credential store");
@@ -579,14 +574,14 @@ namespace LuaConfig{
     }
 
     void MarkOwned(AppId_t AppId) {
-        if(!OwnedAppIdSet.count(AppId)) {
+        if (OwnedAppIdSet.insert(AppId).second) {
             LOG_PACKAGE_INFO("Marking app {} as owned", AppId);
-            OwnedAppIdSet.insert(AppId);
         }
     }
 
     std::vector<AppId_t> GetAllDepotIds() {
         std::vector<AppId_t> DepotIds;
+        DepotIds.reserve(DepotKeySet.size());
         for (const auto& pair : DepotKeySet) {
             DepotIds.push_back(pair.first);
         }
@@ -594,22 +589,16 @@ namespace LuaConfig{
     }
 
     std::vector<uint8> GetDecryptionKey(AppId_t DepotId) {
-        std::vector<uint8> keyBytes;
-        if (DepotKeySet.count(DepotId)) {
-            const std::string& keyStr = DepotKeySet[DepotId];
-            // Convert hex string to byte vector.
-            for (size_t i = 0; i < keyStr.length(); i += 2) {
-                keyBytes.push_back(ParseHexByte(std::string_view(keyStr).substr(i, 2)));
-            }
+        auto it = DepotKeySet.find(DepotId);
+        if (it != DepotKeySet.end()) {
+            return ParseHexStringToBytes(it->second.data(), it->second.size());
         }
-        return keyBytes;
+        return {};
     }
 
     uint64_t GetAccessToken(AppId_t AppId) {
-        if (AccessTokenSet.count(AppId)) {
-            return AccessTokenSet[AppId];
-        }
-        return 0;
+        auto it = AccessTokenSet.find(AppId);
+        return it != AccessTokenSet.end() ? it->second : 0;
     }
 
     bool pinApp(AppId_t AppId) {
@@ -617,8 +606,9 @@ namespace LuaConfig{
     }
 
     uint64_t GetStatSteamId(AppId_t AppId) {
-        if (StatSteamIdSet.count(AppId))
-            return StatSteamIdSet[AppId];
+        auto it = StatSteamIdSet.find(AppId);
+        if (it != StatSteamIdSet.end())
+            return it->second;
         uint64_t apiSteamId = 0;
         if (StatsClient::FetchStatSteamId(AppId, &apiSteamId))
             return apiSteamId;
