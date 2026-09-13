@@ -5,6 +5,9 @@
 #include "include/Encoding.h"
 #include "include/DynamicLibrary.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <algorithm>
@@ -91,7 +94,7 @@ bool ReadBinaryFile(const std::filesystem::path& path, std::vector<uint8_t>& out
     }
     std::vector<uint8_t> buf(static_cast<size_t>(size));
     in.seekg(0, std::ios::beg);
-    if (!in.read(reinterpret_cast<char*>(buf.data()), size)) {
+    if (!in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size))) {
         return false;
     }
     out = std::move(buf);
@@ -158,7 +161,7 @@ bool BinaryFileEquals(const std::filesystem::path& path, const void* data, size_
     const char* p = reinterpret_cast<const char*>(data);
     size_t remaining = size;
     while (remaining > 0) {
-        const size_t chunk = std::min(remaining, kChunkSize);
+        const size_t chunk = (std::min)(remaining, kChunkSize);
         in.read(buf, static_cast<std::streamsize>(chunk));
         if (in.gcount() != static_cast<std::streamsize>(chunk)) {
             return false;
