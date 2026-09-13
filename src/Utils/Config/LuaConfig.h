@@ -26,7 +26,7 @@ namespace LuaConfig{
     const std::unordered_map<uint64_t, ManifestOverride>& GetManifestOverrides();
 
     void ParseFile(const std::string& filePath);
-    void UnloadFile(const std::string& filePath);
+    void UnloadFile(const std::string& filePath, bool isPermanentRemoval = false);
     uint32_t UnloadDirectory(const std::string& directory);
     // Returns and clears the list of depot IDs removed/added since last call.
     std::vector<AppId_t> TakePendingRemovals();

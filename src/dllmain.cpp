@@ -8,6 +8,7 @@
 #include "Utils/SteamMetadata/SteamDiagnostics.h"
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "OSTPlatform/include/Encoding.h"
+#include "OSTPlatform/include/SteamCredentialStore.h"
 #include "OSTPlatform/include/Thread.h"
 
 #include <chrono>
@@ -59,16 +60,15 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
     }
     sprintf_s(ConfigPath, kRuntimePathCapacity, "%s", tomlPath.c_str());
 
-    std::filesystem::path luaFs;
-    if (IsPortableMode()) {
-        luaFs = PathFromUtf8(DllDir) / "config" / "lua";
-    } else {
-        luaFs = PathFromUtf8(SteamInstallPath) / "config" / "lua";
-    }
+    const auto storageBase = PathFromUtf8(GetStorageDirectory());
+    const auto luaFs = storageBase / "config" / "lua";
     std::error_code ec;
     std::filesystem::create_directories(luaFs, ec);
-    std::string luaPath = PathToUtf8(luaFs);
+    const std::string luaPath = PathToUtf8(luaFs);
     sprintf_s(LuaDir, kRuntimePathCapacity, "%s", luaPath.c_str());
+
+    const auto credFs = storageBase / "config" / "credentials";
+    OSTPlatform::SteamCredentialStore::SetStorageDirectory(credFs);
 
     // 4. Diversion shadow module cloning & loading:
     // Clone steamclient64.dll into bin\diversion64.dll so all hooks and patches

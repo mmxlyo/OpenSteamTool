@@ -110,11 +110,10 @@ namespace {
             RequestEncryptedAppTicketReq req{pRead};
             std::span<const uint8_t> nonce;
             if (req.ok()) nonce = req.pData();
-            // Whatever account the registry's current static ticket already
+            // Whatever account the credential store's current static ticket already
             // belongs to (0 if none) — lets the backend pin the mint to that
             // SAME account instead of risking a different pool pick.
-            const uint64_t existingSteamId = AppTicket::ExtractSteamIdFromTicketBytes(
-                AppTicket::GetAppOwnershipTicketFromCredentialStore(appId));
+            const uint64_t existingSteamId = AppTicket::GetTicketSteamID(appId);
             // Mint a fresh eticket whenever the credential store already has a ticket
             // for this app (existingSteamId != 0). The minted eticket is pinned to
             // the same pool account via existingSteamId, which matches GetSteamID's

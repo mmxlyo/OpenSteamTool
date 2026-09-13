@@ -128,7 +128,7 @@ void ProcessChanges(const std::vector<FileChange>& changes) {
                 LOG_PACKAGE_TRACE("Lua file {}: {}", ToString(change.action), change.path);
                 std::string normPath = PathToUtf8(PathFromUtf8(change.path).lexically_normal());
                 if (change.action == ChangeAction::Removed) {
-                    LuaConfig::UnloadFile(normPath);
+                    LuaConfig::UnloadFile(normPath, true);
                     luaStateChanged = true;
                 } else {
                     if (processedLua.insert(normPath).second) {

@@ -4,6 +4,8 @@
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Logging/Log.h"
 
+#include <cstring>
+
 namespace AppTicket {
     constexpr AppId_t kLocalAppTicketSourceAppId = 7;
     constexpr size_t kSteamIdTicketMinimumSize = 16;
@@ -70,7 +72,7 @@ namespace AppTicket {
                 ticket.totalSize = static_cast<uint32>(ticket.data.size());
                 ticket.appIdOffset = kAppTicketAppIdOffset;
                 ticket.steamIdOffset = kAppTicketSteamIdOffset;
-                ticket.signatureOffset = *reinterpret_cast<const uint32*>(ticket.data.data());
+                std::memcpy(&ticket.signatureOffset, ticket.data.data(), sizeof(uint32));
                 ticket.signatureSize = kAppTicketSignatureSize;
                 return true;
             }
@@ -146,10 +148,25 @@ namespace AppTicket {
         return true;
     }
 
+    bool RemoveCredentials(AppId_t appId) {
+        return OSTPlatform::SteamCredentialStore::RemoveCredentials(appId);
+    }
+
     uint64_t ExtractSteamIdFromTicketBytes(const std::vector<uint8_t>& ticket) {
         // Layout: ticket bytes start with [uint32 Size][uint32 Version][uint64 SteamID][...].
         if (ticket.size() < kSteamIdTicketMinimumSize) return 0;
-        return reinterpret_cast<const uint64_t*>(ticket.data())[1];
+        uint64_t steamId = 0;
+        std::memcpy(&steamId, ticket.data() + 8, sizeof(uint64_t));
+        return steamId;
+    }
+
+    uint64_t GetTicketSteamID(AppId_t appId) {
+        if (!LuaConfig::HasDepot(appId)) return 0;
+        uint64_t steamId = 0;
+        if (OSTPlatform::SteamCredentialStore::GetTicketSteamId(appId, steamId) == OSTPlatform::SteamCredentialStore::Status::Ok) {
+            return steamId;
+        }
+        return 0;
     }
 
     uint64_t GetSpoofSteamID(AppId_t appId) {
@@ -158,18 +175,24 @@ namespace AppTicket {
             LOG_DEBUG("GetSpoofSteamID for AppId {}: not in addappid, skip spoofing", appId);
             return 0;
         }
+
+        // 1. If an explicit AppTicket is cached, extract its SteamID with zero-copy.
+        // The SteamID baked into the ticket MUST match what we return,
+        // otherwise Denuvo's cross-check will fail with Error 54.
+        const uint64_t ticketSteamId = GetTicketSteamID(appId);
+        if (ticketSteamId != 0) {
+            LOG_DEBUG("GetSpoofSteamID for AppId {}: ticket SteamID -> 0x{:X}({})", appId, ticketSteamId, ticketSteamId);
+            return ticketSteamId;
+        }
+
+        // 2. If no explicit ticket is cached, fall back to credential store SteamID.txt
+        // (written by DenuvoAuth during offline activation).
         const uint64_t credentialSteamID = GetSteamIDFromCredentialStore(appId);
         if (credentialSteamID != 0) {
+            LOG_DEBUG("GetSpoofSteamID for AppId {}: credential store SteamID -> 0x{:X}({})", appId, credentialSteamID, credentialSteamID);
             return credentialSteamID;
         }
 
-        // The SteamID baked into the cached AppOwnershipTicket is the same
-        // one Steam itself uses for this app — pull it straight out of the
-        // ticket so spoofed responses match what the DRM layer expects.
-        const uint64_t steamID = ExtractSteamIdFromTicketBytes(GetAppOwnershipTicketFromCredentialStore(appId));
-        if (steamID) {
-            LOG_DEBUG("GetSpoofSteamID for AppId {}: -> 0x{:X}({})", appId, steamID, steamID);
-        }
-        return steamID;
+        return 0;
     }
 }

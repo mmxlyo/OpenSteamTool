@@ -50,6 +50,8 @@ namespace LuaConfig{
     // Per-file tracking: which depots each .lua file contributed.
     static std::string g_currentFile;
     static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileDepots;
+    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileCredentials;
+    static std::unordered_map<AppId_t, uint32_t> g_credentialRefCount;
     static std::unordered_map<std::string, std::unordered_map<uint64_t, ManifestOverride>> g_fileManifestOverrides;
     static std::unordered_map<std::string, uint64_t> g_fileParseSequence;
     static uint64_t g_nextFileParseSequence = 0;
@@ -423,6 +425,12 @@ namespace LuaConfig{
         if (!AppTicket::WriteAppOwnershipTicket(appId, binary))
             return luaL_error(L, "setAppTicket: failed to write credential store");
 
+        if (!g_currentFile.empty()) {
+            if (g_fileCredentials[g_currentFile].insert(appId).second) {
+                ++g_credentialRefCount[appId];
+            }
+        }
+
         return 0;
     }
 
@@ -456,6 +464,12 @@ namespace LuaConfig{
 
         if (!AppTicket::WriteEncryptedTicket(appId, binary))
             return luaL_error(L, "setETicket: failed to write credential store");
+
+        if (!g_currentFile.empty()) {
+            if (g_fileCredentials[g_currentFile].insert(appId).second) {
+                ++g_credentialRefCount[appId];
+            }
+        }
 
         return 0;
     }
@@ -722,12 +736,13 @@ namespace LuaConfig{
     }
 
     // ── per-file unload ────────────────────────────────────────
-    void UnloadFile(const std::string& rawFilePath) {
+    void UnloadFile(const std::string& rawFilePath, bool isPermanentRemoval) {
         std::string filePath = OSTPlatform::Encoding::PathToUtf8(
             OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal());
         auto depotsIt = g_fileDepots.find(filePath);
         auto manifestIt = g_fileManifestOverrides.find(filePath);
-        if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end()) return;
+        auto credIt = g_fileCredentials.find(filePath);
+        if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end() && credIt == g_fileCredentials.end()) return;
 
         if (depotsIt != g_fileDepots.end()) {
             for (AppId_t id : depotsIt->second) {
@@ -737,11 +752,29 @@ namespace LuaConfig{
                     DepotKeySet.erase(id);
                     g_purchaseTime.erase(id);
                     g_pendingRemovals.push_back(id);
+                    if (isPermanentRemoval && !g_credentialRefCount.contains(id)) {
+                        AppTicket::RemoveCredentials(id);
+                    }
                 }
             }
 
             LOG_PACKAGE_INFO("UnloadFile: removed {} depots from {}", depotsIt->second.size(), filePath);
             g_fileDepots.erase(depotsIt);
+        }
+
+        if (credIt != g_fileCredentials.end()) {
+            for (AppId_t id : credIt->second) {
+                auto refIt = g_credentialRefCount.find(id);
+                if (refIt != g_credentialRefCount.end()) {
+                    if (--refIt->second == 0) {
+                        g_credentialRefCount.erase(refIt);
+                        if (isPermanentRemoval && !g_depotRefCount.contains(id)) {
+                            AppTicket::RemoveCredentials(id);
+                        }
+                    }
+                }
+            }
+            g_fileCredentials.erase(credIt);
         }
 
         if (manifestIt != g_fileManifestOverrides.end()) {
@@ -791,6 +824,11 @@ namespace LuaConfig{
                 toUnload.push_back(filePath);
             }
         }
+        for (const auto& [filePath, _] : g_fileCredentials) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
         for (const auto& [filePath, _] : g_fileParseSequence) {
             if (StartsWithCaseInsensitive(filePath, dirPath)) {
                 toUnload.push_back(filePath);
@@ -802,7 +840,7 @@ namespace LuaConfig{
 
         for (const auto& filePath : toUnload) {
             LOG_PACKAGE_INFO("UnloadDirectory: unloading file '{}' from removed dir '{}'", filePath, rawDirPath);
-            UnloadFile(filePath);
+            UnloadFile(filePath, true);
         }
         return static_cast<uint32_t>(toUnload.size());
     }
@@ -1017,8 +1055,8 @@ namespace LuaConfig{
         std::string filePath = OSTPlatform::Encoding::PathToUtf8(path);
         std::string filenameUtf8 = OSTPlatform::Encoding::PathToUtf8(path.filename());
 
-        // Remove old entries from this file before re-parsing.
-        UnloadFile(filePath);
+        // Remove old entries from this file before re-parsing (in-memory only, keep disk credentials).
+        UnloadFile(filePath, false);
         g_currentFile = filePath;
 
         std::ifstream file(path);
@@ -1154,13 +1192,16 @@ namespace LuaConfig{
         for (const auto& [filePath, _] : g_fileManifestOverrides) {
             rememberTracked(filePath);
         }
+        for (const auto& [filePath, _] : g_fileCredentials) {
+            rememberTracked(filePath);
+        }
         for (const auto& [filePath, _] : g_fileParseSequence) {
             rememberTracked(filePath);
         }
 
         for (const auto& filePath : trackedFiles) {
             if (!activeFiles.contains(filePath)) {
-                UnloadFile(filePath);
+                UnloadFile(filePath, true);
             }
         }
 
