@@ -27,6 +27,7 @@ namespace {
     void HandlerPost_IClientUser_GetSteamID(CPipeClient* pipe,CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
         AppId_t appId = Hooks_Misc::ResolveAppId();
+        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
 
@@ -58,6 +59,7 @@ namespace {
 
         AppTicket::AppOwnershipTicket ticket{};
         AppId_t appId = req.unAppID() == kOnlineFixAppId ? Hooks_Misc::ResolveAppId() : req.unAppID();
+        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
         
         AppTicket::AppTicketSource ticketSource;
         if (PipeManager::DenuvoAuth::IsAuthorizedPipe(pipe)) {
@@ -101,6 +103,7 @@ namespace {
         if (!resp.ok()) return;
 
         AppId_t appId = Hooks_Misc::ResolveAppId();
+        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
 
         // Strict Denuvo passes a per-launch nonce (pData) here and rejects a
         // stale/cached ticket (88500012). Try an on-demand mint bound to that
@@ -150,6 +153,7 @@ namespace {
     void HandlerPost_IClientUser_GetEncryptedAppTicket(CPipeClient* pipe, CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
         AppId_t appId = Hooks_Misc::ResolveAppId();
+        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
 
         // Prefer a fresh nonce-bound ticket minted in RequestEncryptedAppTicket;
         // fall back to the static credential-store ticket (titles that don't

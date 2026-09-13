@@ -16,6 +16,11 @@ namespace OSTPlatform::SteamCredentialStore {
 
     const char* ToString(Status status);
 
+    // Canonical AppTicket binary layout constants:
+    // [uint32 Size][uint32 Version][uint64 SteamID][...]
+    inline constexpr size_t kAppTicketSteamIdOffset = 8;
+    inline constexpr size_t kSteamIdTicketMinimumSize = kAppTicketSteamIdOffset + sizeof(uint64_t); // 16
+
     void SetStorageDirectory(const std::filesystem::path& dir);
     std::filesystem::path GetStorageDirectory();
 

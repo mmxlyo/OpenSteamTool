@@ -1,14 +1,16 @@
 #pragma once
 
 #include "Steam/Types.h"
+#include "OSTPlatform/include/SteamCredentialStore.h"
 
 #include <cstdint>
 #include <vector>
 
 namespace AppTicket {
-    inline constexpr uint32 kAppTicketSteamIdOffset = 8;
+    inline constexpr uint32 kAppTicketSteamIdOffset = static_cast<uint32>(OSTPlatform::SteamCredentialStore::kAppTicketSteamIdOffset);
     inline constexpr uint32 kAppTicketAppIdOffset = 16;
     inline constexpr uint32 kAppTicketSignatureSize = 128;
+    inline constexpr size_t kSteamIdTicketMinimumSize = OSTPlatform::SteamCredentialStore::kSteamIdTicketMinimumSize;
 
     enum class AppTicketSource {
         CredentialStoreOnly,
@@ -45,6 +47,7 @@ namespace AppTicket {
     // kAppTicketSteamIdOffset). Returns 0 if the ticket is too short to
     // contain one. Lets callers identify which account a ticket belongs to
     // without duplicating the layout knowledge.
+    uint64_t ExtractSteamIdFromTicketBytes(const uint8_t* data, size_t size);
     uint64_t ExtractSteamIdFromTicketBytes(const std::vector<uint8_t>& ticket);
 
     // Write AppTicket binary data to Steam's local credential store.

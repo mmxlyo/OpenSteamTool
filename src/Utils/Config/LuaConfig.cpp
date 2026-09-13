@@ -726,6 +726,12 @@ namespace LuaConfig{
     }
 
     // ── per-file unload ────────────────────────────────────────
+    // Design tradeoff note: `isPermanentRemoval` controls whether persisted disk
+    // credentials (AppTicket.bin, ETicket.bin, SteamID.txt) are deleted.
+    // - On file reload/re-parse (ParseFile): passed as false to protect costly
+    //   Denuvo offline tokens/tickets against accidental wiping during edits.
+    // - On explicit file deletion (LuaFileWatcher delete event): passed as true,
+    //   triggering physical deletion once all referencing lua files and depots drop to 0.
     void UnloadFile(const std::string& rawFilePath, bool isPermanentRemoval) {
         std::string filePath = OSTPlatform::Encoding::PathToUtf8(
             OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal());

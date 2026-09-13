@@ -1,14 +1,12 @@
 #include "AppTicket.h"
 #include "Hook/Hooks_Decryption.h"
 #include "OSTPlatform/include/SteamCredentialStore.h"
-#include "Utils/Config/LuaConfig.h"
 #include "Utils/Logging/Log.h"
 
 #include <cstring>
 
 namespace AppTicket {
     constexpr AppId_t kLocalAppTicketSourceAppId = 7;
-    constexpr size_t kSteamIdTicketMinimumSize = 16;
 
     static uint64_t GetSteamIDFromCredentialStore(AppId_t appId) {
         uint64_t steamId = 0;
@@ -24,11 +22,6 @@ namespace AppTicket {
     }
 
     std::vector<uint8_t> GetAppOwnershipTicketFromCredentialStore(AppId_t appId) {
-        // exclude those appids that are not in addappid
-        if (!LuaConfig::HasDepot(appId)) {
-            LOG_DEBUG("GetAppOwnershipTicketFromCredentialStore for AppId {}: not in addappid, skip", appId);
-            return {};
-        }
         std::vector<uint8_t> ticket;
         const auto status = OSTPlatform::SteamCredentialStore::GetAppTicket(appId, ticket);
         if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
@@ -92,12 +85,7 @@ namespace AppTicket {
     }
 
     std::vector<uint8_t> GetEncryptedTicketFromCredentialStore(AppId_t appId) {
-        LOG_DEBUG("appid={}", appId);    
-        // exclude those appids that are not in addappid
-        if (!LuaConfig::HasDepot(appId)) {
-            LOG_DEBUG("GetEncryptedTicketFromCredentialStore for AppId {}: not in addappid, skip", appId);
-            return {};
-        }
+        LOG_DEBUG("appid={}", appId);
         std::vector<uint8_t> ticket;
         const auto status = OSTPlatform::SteamCredentialStore::GetETicket(appId, ticket);
         if (status != OSTPlatform::SteamCredentialStore::Status::Ok) {
@@ -152,16 +140,19 @@ namespace AppTicket {
         return OSTPlatform::SteamCredentialStore::RemoveCredentials(appId);
     }
 
-    uint64_t ExtractSteamIdFromTicketBytes(const std::vector<uint8_t>& ticket) {
+    uint64_t ExtractSteamIdFromTicketBytes(const uint8_t* data, size_t size) {
         // Layout: ticket bytes start with [uint32 Size][uint32 Version][uint64 SteamID][...].
-        if (ticket.size() < kSteamIdTicketMinimumSize) return 0;
+        if (!data || size < kSteamIdTicketMinimumSize) return 0;
         uint64_t steamId = 0;
-        std::memcpy(&steamId, ticket.data() + 8, sizeof(uint64_t));
+        std::memcpy(&steamId, data + kAppTicketSteamIdOffset, sizeof(uint64_t));
         return steamId;
     }
 
+    uint64_t ExtractSteamIdFromTicketBytes(const std::vector<uint8_t>& ticket) {
+        return ExtractSteamIdFromTicketBytes(ticket.data(), ticket.size());
+    }
+
     uint64_t GetTicketSteamID(AppId_t appId) {
-        if (!LuaConfig::HasDepot(appId)) return 0;
         uint64_t steamId = 0;
         if (OSTPlatform::SteamCredentialStore::GetTicketSteamId(appId, steamId) == OSTPlatform::SteamCredentialStore::Status::Ok) {
             return steamId;
@@ -170,12 +161,6 @@ namespace AppTicket {
     }
 
     uint64_t GetSpoofSteamID(AppId_t appId) {
-        // exclude those appids that are not in addappid
-        if (!LuaConfig::HasDepot(appId)) {
-            LOG_DEBUG("GetSpoofSteamID for AppId {}: not in addappid, skip spoofing", appId);
-            return 0;
-        }
-
         // 1. If an explicit AppTicket is cached, extract its SteamID with zero-copy.
         // The SteamID baked into the ticket MUST match what we return,
         // otherwise Denuvo's cross-check will fail with Error 54.

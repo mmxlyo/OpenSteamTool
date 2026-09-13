@@ -24,7 +24,15 @@ constexpr const wchar_t* kValueActiveUser = L"ActiveUser";
 constexpr const wchar_t* kValueUniverse = L"Universe";
 
 constexpr size_t kMaxTicketFileSize = 1024 * 1024; // 1 MB ceiling to protect against corrupt files
-constexpr size_t kSteamIdTicketMinimumSize = 16;
+
+uint64_t ExtractSteamIdFromTicketData(const uint8_t* data, size_t size) {
+    if (!data || size < kSteamIdTicketMinimumSize) {
+        return 0;
+    }
+    uint64_t steamId = 0;
+    std::memcpy(&steamId, data + kAppTicketSteamIdOffset, sizeof(uint64_t));
+    return steamId;
+}
 
 struct AppCredentialEntry {
     std::vector<uint8_t> appTicket;
@@ -56,9 +64,14 @@ std::filesystem::path GetSafeStorageDir() {
     if (!exeDir.empty()) {
         g_storageDir = exeDir / "config" / "credentials";
     } else {
-        std::error_code ec;
-        const auto cur = std::filesystem::current_path(ec);
-        g_storageDir = (ec ? std::filesystem::path(".") : cur) / "config" / "credentials";
+        const auto modDir = DynamicLibrary::GetModuleDirectory(DynamicLibrary::GetCurrentModuleHandle());
+        if (!modDir.empty()) {
+            g_storageDir = modDir / "config" / "credentials";
+        } else {
+            std::error_code ec;
+            const auto cur = std::filesystem::current_path(ec);
+            g_storageDir = (ec ? std::filesystem::path(".") : cur) / "config" / "credentials";
+        }
     }
     return g_storageDir;
 }
@@ -498,12 +511,12 @@ Status GetTicketSteamId(uint32_t appId, uint64_t& steamId) {
         std::shared_lock lock(g_credentialMutex);
         auto it = g_credentials.find(appId);
         if (it != g_credentials.end() && it->second.appTicketLoaded) {
-            if (it->second.appTicket.size() >= kSteamIdTicketMinimumSize) {
-                std::memcpy(&steamId, it->second.appTicket.data() + 8, sizeof(uint64_t));
-                if (steamId != 0) {
-                    OSTP_LOG_DEBUG("SteamCredentialStore: read Ticket SteamID (memory) for appid={} steamid={}", appId, steamId);
-                    return Status::Ok;
-                }
+            const uint64_t extracted = ExtractSteamIdFromTicketData(
+                it->second.appTicket.data(), it->second.appTicket.size());
+            if (extracted != 0) {
+                steamId = extracted;
+                OSTP_LOG_DEBUG("SteamCredentialStore: read Ticket SteamID (memory) for appid={} steamid={}", appId, steamId);
+                return Status::Ok;
             }
             return Status::NotFound;
         }
@@ -511,9 +524,10 @@ Status GetTicketSteamId(uint32_t appId, uint64_t& steamId) {
 
     std::vector<uint8_t> ticket;
     const auto status = GetAppTicket(appId, ticket);
-    if (status == Status::Ok && ticket.size() >= kSteamIdTicketMinimumSize) {
-        std::memcpy(&steamId, ticket.data() + 8, sizeof(uint64_t));
-        if (steamId != 0) {
+    if (status == Status::Ok) {
+        const uint64_t extracted = ExtractSteamIdFromTicketData(ticket.data(), ticket.size());
+        if (extracted != 0) {
+            steamId = extracted;
             return Status::Ok;
         }
     }
