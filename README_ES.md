@@ -50,12 +50,12 @@
 - Omite las restricciones de Steam Family Sharing para los juegos que se hayan añadido a la biblioteca con `addappid` en Lua. Todas las cuentas de la familia de Steam que participen en el préstamo familiar deben usar OpenSteamTool para que esto funcione.
 
 ### Compatible con juegos protegidos por Denuvo y SteamStub
-- Los juegos protegidos únicamente por SteamStub no requieren la configuración de `AppTicket`. OpenSteamTool puede reutilizar el ticket local de ConfigStore de Steam y falsificar el AppId solicitado a través de una vulnerabilidad de desbordamiento por cuatro (off-by-four ticket parsing vulnerability) en SteamDRMP, sin necesidad de inyectarse en el proceso del juego.
-- Los juegos protegidos por Denuvo siguen requiriendo datos explícitos del ticket. En `HKEY_CURRENT_USER\Software\Valve\Steam\Apps\{AppId}`, tanto `AppTicket` como `ETicket` son valores `REG_BINARY`.
-- Utiliza `setAppTicket(appid, "hex")` y `setETicket(appid, "hex")` en la configuración de Lua para escribir estos valores en el registro de forma automática.
-- La verificación de Denuvo tiene una ventana de validez de 30 minutos. Cuando esta ventana expira, la autorización puede fallar con el código de error de Denuvo `88500005`; actualiza los datos del ticket antes de volver a intentarlo.
-- Prioridad de AppTicket: los tickets explícitos tienen la prioridad más alta, incluyendo los tickets configurados por `setAppTicket` y los valores de `AppTicket` ya existentes en el registro. Si no hay ningún AppTicket explícito disponible, OpenSteamTool recurre a la ruta del ticket falsificado de ConfigStore local.
-- Prioridad de SteamID: primero lee `SteamID` como `REG_SZ`(únicamente numérico); si no se encuentra, lo analiza a partir del `AppTicket` explícito.
+- Los juegos con protección exclusiva SteamStub no requieren `AppTicket`. OpenSteamTool falsifica el AppId mediante el ticket de ConfigStore de Steam, sin inyectarse en el proceso del juego.
+- Los juegos con Denuvo requieren datos de credenciales. Se almacenan en `<Directorio de Steam o Portable>/config/credentials/<AppId>/` (`AppTicket.bin`, `ETicket.bin`, `SteamID.txt`), ya no en el Registro de Windows.
+- **Tickets explícitos**: Usa `setAppTicket(appid, "hex")` y `setETicket(appid, "hex")` en la configuración Lua. `AppTicket` ya contiene el SteamID; **no** es necesario configurar `SteamID.txt` si se usan tickets explícitos. Al eliminar el script Lua, este directorio se limpia automáticamente.
+- **Autorización offline al cambiar de cuenta**: Cuando una cuenta que posee el juego inicia en línea y pasa la verificación, el sistema guarda automáticamente su `SteamID.txt`. Basta con cambiar a una cuenta sin el juego.
+- **Prioridad de SteamID y Error 54**: El SteamID del `AppTicket` tiene prioridad; si no hay ticket explícito, se lee `SteamID.txt`. Si el SteamID no coincide con el ticket, Denuvo devolverá el Error 54 (`k_EResultDiskFull`).
+- Los tokens de Denuvo pueden caducar. Si la autorización falla con el error `88500005`, vuelve a extraer y actualiza los datos del ticket en la configuración Lua.
 
 ### Extracción de tickets y configuración con `extract_tickets`
 
@@ -116,9 +116,8 @@ addtoken(1361510,"2764735786934684318") -- añade el token de acceso ("276473578
 setManifestid(1361511,"5656605350306673283") -- fija depotid:1361511 manifest_gid:5656605350306673283, el tamaño por defecto es 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- lo mismo, pero con un tamaño explícito
 
-setAppTicket(1361510,"0100000000000000...") -- escribe AppTicket (REG_BINARY) en HKCU\Software\Valve\Steam\Apps\1361510\AppTicket
-
-setETicket(1361510,"0100000000000000...") -- escribe ETicket (REG_BINARY) en HKCU\Software\Valve\Steam\Apps\1361510\ETicket
+setAppTicket(1361510,"0100000000000000...") -- escribe AppTicket en el almacenamiento local (config/credentials/1361510/AppTicket.bin)
+setETicket(1361510,"0100000000000000...")   -- escribe ETicket en el almacenamiento local (config/credentials/1361510/ETicket.bin)
 
 setStat(1361510, "76561197960287930") -- utiliza los datos de logros del SteamID especificado para el appid 1361510
 -- Si no se configura, se utiliza la API de estadísticas cuando está habilitada; de lo contrario se usa el SteamID por defecto 76561198028121353.

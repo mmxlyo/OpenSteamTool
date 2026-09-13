@@ -55,12 +55,12 @@
 - 绕过 Steam 家庭共享限制，适用于通过 Lua 中 `addappid` 添加到库的游戏。参与共享的 Steam 家庭中的所有账户都必须使用 OpenSteamTool 才能生效
 
 ### 兼容 Denuvo 和 SteamStub 保护的游戏
-- 仅 SteamStub 保护的游戏不需要配置 `AppTicket`。OpenSteamTool 可以重用 Steam 本地 ConfigStore 令牌，通过 SteamDRMP 令牌解析漏洞伪造请求的 AppId，无需注入游戏进程
-- Denuvo 保护的游戏仍需要显式令牌数据。OpenSteamTool 通过平台凭据存储保存 `AppTicket` 和 `ETicket`
-- 在 Lua 配置中使用 `setAppTicket(appid, "hex")` 和 `setETicket(appid, "hex")` 自动将这些值写入平台凭据存储
-- Denuvo 验证有 30 分钟有效窗口。过期后授权可能失败，显示 Denuvo 错误代码 `88500005`；重试前请刷新令牌数据
-- AppTicket 优先级：显式令牌优先级最高，包括通过 `setAppTicket` 配置的令牌和已缓存的 `AppTicket` 凭据值。若无可用显式 AppTicket，OpenSteamTool 回退到伪造的本地 ConfigStore 令牌路径
-- SteamID 优先级：优先读取缓存的 `SteamID`；若缺失，则从显式 `AppTicket` 解析。在 Windows 上，凭据存储后端当前使用 `HKCU\Software\Valve\Steam\Apps\<AppId>`。Linux 后端尚未实现
+- 仅 SteamStub 保护的游戏不需要配置 `AppTicket`。OpenSteamTool 通过 Steam 本地 ConfigStore 令牌伪造 AppId，无需注入游戏进程
+- Denuvo 保护的游戏仍需凭据数据。所有凭据保存在 `<Steam或便携目录>/config/credentials/<AppId>/`（含 `AppTicket.bin`、`ETicket.bin`、`SteamID.txt`），不再写入 Windows 注册表
+- **显式设置票据**：在 Lua 配置中使用 `setAppTicket(appid, "hex")` 和 `setETicket(appid, "hex")`。`AppTicket` 本身已内嵌 SteamID，使用票据时**不需要**配置 `SteamID.txt`。彻底删除对应 Lua 脚本时，该凭据目录会自动清理
+- **切号离线授权**：拥有游戏的账号在线启动通过验证后，系统会自动保存该账号的 `SteamID.txt`。切换到无游戏的账号即可
+- **SteamID 优先级与 Error 54**：优先读取 `AppTicket` 内嵌的 SteamID；若无显式票据，再读取 `SteamID.txt`。若 SteamID 与票据不匹配，Denuvo 将报错误代码 54 (`k_EResultDiskFull`)
+- Denuvo 令牌存在时效性或硬件绑定。若授权失败显示错误代码 `88500005`，请重新提取并刷新 Lua 配置中的票据数据
 
 ### 使用 `extract_tickets` 提取授权与配置文件
 
@@ -121,9 +121,8 @@ addtoken(1361510,"2764735786934684318") -- 为 appid 为 1361510 的游戏添加
 setManifestid(1361511,"5656605350306673283") -- 固定 depotid:1361511 manifest_gid:5656605350306673283，大小默认为 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- 同上，但指定明确大小
 
-setAppTicket(1361510,"0100000000000000...") -- 将 AppTicket 写入凭据存储；在 Windows 上：HKCU\Software\Valve\Steam\Apps\1361510\AppTicket
-
-setETicket(1361510,"0100000000000000...") -- 将 ETicket 写入凭据存储；在 Windows 上：HKCU\Software\Valve\Steam\Apps\1361510\ETicket
+setAppTicket(1361510,"0100000000000000...") -- 将 AppTicket 写入凭据存储（config/credentials/1361510/AppTicket.bin）
+setETicket(1361510,"0100000000000000...")   -- 将 ETicket 写入凭据存储（config/credentials/1361510/ETicket.bin）
 
 setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用于 appid 1361510
 -- 若未配置，启用时使用 stats API；否则使用默认 SteamID 76561198028121353

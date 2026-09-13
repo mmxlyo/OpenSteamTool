@@ -54,12 +54,12 @@
 - Bypass Steam Family Sharing restrictions for games that have been added to the library with `addappid` in Lua. All accounts in the Steam Family that participate in sharing must use OpenSteamTool for this to work.
 
 ### Compatible with games protected by Denuvo and SteamStub
-- SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool can reuse Steam's local ConfigStore ticket and forge the requested AppId through a SteamDRMP off-by-four ticket parsing vulnerability, without injecting into the game process.
-- Denuvo-protected games still require explicit ticket data. OpenSteamTool stores `AppTicket` and `ETicket` through the platform credential store.
-- Use `setAppTicket(appid, "hex")` and `setETicket(appid, "hex")` in Lua config to write these values to the platform credential store automatically.
-- Denuvo verification has a 30-minute validity window. After this window expires, authorization may fail with Denuvo error code `88500005`; refresh the ticket data before retrying.
-- AppTicket priority: explicit tickets have the highest priority, including tickets configured by `setAppTicket` and existing cached `AppTicket` credential values. If no explicit AppTicket is available, OpenSteamTool falls back to the forged local ConfigStore ticket path.
-- SteamID priority: read cached `SteamID` first; if missing, parse from explicit `AppTicket`. On Windows, the credential store backend currently uses `HKCU\Software\Valve\Steam\Apps\<AppId>`. The Linux backend is not implemented yet.
+- SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool forges the requested AppId using Steam's local ConfigStore ticket, without injecting into the game process.
+- Denuvo-protected games require credential data. Credentials are stored under `<Steam or Portable Dir>/config/credentials/<AppId>/` (`AppTicket.bin`, `ETicket.bin`, `SteamID.txt`), no longer in the Windows Registry.
+- **Explicit Tickets**: Use `setAppTicket(appid, "hex")` and `setETicket(appid, "hex")` in Lua config. `AppTicket` inherently contains the owner's SteamID; configuring `SteamID.txt` is **not** required when using explicit tickets. Deleting the Lua script automatically cleans up this directory.
+- **Account Switching Offline Auth**: When an account owning the game launches online and passes verification, OpenSteamTool automatically saves its `SteamID.txt`. Simply switch to an account without the game.
+- **SteamID Priority & Error 54**: The SteamID embedded in `AppTicket` takes priority; if no explicit ticket exists, `SteamID.txt` is used. A mismatch between the SteamID and ticket causes Denuvo Error 54 (`k_EResultDiskFull`).
+- Denuvo tokens may expire or be bound to hardware. If launch fails with Denuvo error `88500005`, re-extract and refresh the ticket data in the Lua config.
 
 ### Extracting Tickets & Config with `extract_tickets`
 
@@ -120,9 +120,8 @@ addtoken(1361510,"2764735786934684318") -- add access token ("276473578693468431
 setManifestid(1361511,"5656605350306673283") -- pin depotid:1361511 manifest_gid:5656605350306673283, size defaults to 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- same but with explicit size
 
-setAppTicket(1361510,"0100000000000000...") -- write AppTicket to the credential store; on Windows: HKCU\Software\Valve\Steam\Apps\1361510\AppTicket
-
-setETicket(1361510,"0100000000000000...") -- write ETicket to the credential store; on Windows: HKCU\Software\Valve\Steam\Apps\1361510\ETicket
+setAppTicket(1361510,"0100000000000000...") -- write AppTicket to local store (config/credentials/1361510/AppTicket.bin)
+setETicket(1361510,"0100000000000000...")   -- write ETicket to local store (config/credentials/1361510/ETicket.bin)
 
 setStat(1361510, "76561197960287930") -- use the specified SteamID's achievement data for appid 1361510
 -- If not configured, the stats API is used when enabled; otherwise default SteamID 76561198028121353 is used.
