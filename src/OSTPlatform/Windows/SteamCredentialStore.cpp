@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -64,14 +65,9 @@ std::filesystem::path GetSafeStorageDir() {
     if (!exeDir.empty()) {
         g_storageDir = exeDir / "config" / "credentials";
     } else {
-        const auto modDir = DynamicLibrary::GetModuleDirectory(DynamicLibrary::GetCurrentModuleHandle());
-        if (!modDir.empty()) {
-            g_storageDir = modDir / "config" / "credentials";
-        } else {
-            std::error_code ec;
-            const auto cur = std::filesystem::current_path(ec);
-            g_storageDir = (ec ? std::filesystem::path(".") : cur) / "config" / "credentials";
-        }
+        std::error_code ec;
+        const auto cur = std::filesystem::current_path(ec);
+        g_storageDir = (ec ? std::filesystem::path(".") : cur) / "config" / "credentials";
     }
     return g_storageDir;
 }
