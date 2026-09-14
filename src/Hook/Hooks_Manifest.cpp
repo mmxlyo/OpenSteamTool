@@ -45,21 +45,26 @@ namespace {
         const auto& overrides = LuaConfig::GetManifestOverrides();
         if (overrides.empty()) return result;
 
-        if (pDepotInfo && pDepotInfo->m_Size) {
-            for (uint32 i = 0; i < pDepotInfo->m_Size; ++i) {
-                DepotEntry& e = pDepotInfo->m_Memory.m_pMemory[i];
+        auto patchVector = [&](CUtlVector<DepotEntry>* vec, const char* label) {
+            if (!vec || !vec->m_Size) return;
+            for (uint32 i = 0; i < vec->m_Size; ++i) {
+                DepotEntry& e = vec->m_Memory.m_pMemory[i];
                 auto it = overrides.find(e.DepotId);
                 if (it != overrides.end()) {
                     // if size=0 in the override, keep the original size(affects download display but not the actual download)
                     uint64_t newSize = it->second.size ? it->second.size : e.ManifestSize;
-                    LOG_MANIFEST_INFO("BuildDepotDependency: patching depot {} gid={}->{} size={}->{}",
-                        e.DepotId, e.ManifestGid, it->second.gid,
+                    LOG_MANIFEST_INFO("BuildDepotDependency: patching {} depot {} gid={}->{} size={}->{}",
+                        label, e.DepotId, e.ManifestGid, it->second.gid,
                         e.ManifestSize, newSize);
                     e.ManifestGid  = it->second.gid;
                     e.ManifestSize = newSize;
                 }
             }
-        }
+        };
+
+        patchVector(pDepotInfo, "primary");
+        patchVector(pSharedDepotInfo, "shared");
+
         return result;
     }
 

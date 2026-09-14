@@ -72,7 +72,7 @@ DWORD GetSystemDirectoryThunk(DWORD capacity, wchar_t* buffer) {
 ModuleHandle Load(const std::filesystem::path& path) {
     ModuleHandle module = reinterpret_cast<ModuleHandle>(LoadLibraryW(path.wstring().c_str()));
     if (!module) {
-        OSTP_LOG_WARN("LoadLibraryW('{}') failed (error={})", path.string(), GetLastError());
+        OSTP_LOG_WARN("LoadLibraryW('{}') failed (error={})", Encoding::PathToUtf8(path), GetLastError());
     }
     return module;
 }

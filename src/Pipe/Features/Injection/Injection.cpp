@@ -1,5 +1,6 @@
 #include "Pipe/Features/Injection/Injection.h"
 
+#include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Process.h"
 #include "OSTPlatform/include/RemoteProcess.h"
 #include "Utils/Config/Config.h"
@@ -69,16 +70,17 @@ void Apply(const PipeContext& ctx) {
         if (!Matches(dll, ctx, cmd)) continue;
         if (!ClaimInjection({ctx.process, dll.path})) continue;
 
-        const std::filesystem::path path(dll.path);
+        const std::filesystem::path path = OSTPlatform::Encoding::PathFromUtf8(dll.path);
         const auto status = OSTPlatform::RemoteProcess::InjectLibrary(ctx.process.pid, path);
+        const std::string filenameUtf8 = OSTPlatform::Encoding::PathToUtf8(path.filename());
         if (status == OSTPlatform::RemoteProcess::InjectStatus::Ok) {
             LOG_INJECT_INFO("injected pid={} appid={} dll=\"{}\"",
-                            ctx.process.pid, ctx.appId, path.filename().string());
+                            ctx.process.pid, ctx.appId, filenameUtf8);
         } else {
             LOG_INJECT_WARN("inject failed pid={} appid={} status={} dll=\"{}\"",
                             ctx.process.pid, ctx.appId,
                             OSTPlatform::RemoteProcess::ToString(status),
-                            path.filename().string());
+                            filenameUtf8);
         }
     }
 }

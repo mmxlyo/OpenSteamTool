@@ -4,10 +4,10 @@
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Hash.h"
+#include "OSTPlatform/include/Thread.h"
 #include "Utils/Logging/Log.h"
 
 #include <cstdint>
-#include <thread>
 #include <utility>
 
 namespace SteamDiagnostics {
@@ -98,10 +98,11 @@ std::string Sha256Of(const std::string& path)
 
 void ShowWarning(std::string title, std::string message)
 {
-    std::thread([title = std::move(title),
-                 message = AppendSnapshot(std::move(message))]() {
+    OSTPlatform::Thread::StartDetached([title = std::move(title),
+                                        message = AppendSnapshot(std::move(message))]() -> uint32_t {
         OSTPlatform::Dialog::ShowWarning(title, message);
-    }).detach();
+        return 0;
+    });
 }
 
 } // namespace SteamDiagnostics

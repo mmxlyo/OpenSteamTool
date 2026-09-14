@@ -1,6 +1,7 @@
 #include "include/PE.h"
 
 #include "Windows/Handles.h"
+#include "include/Encoding.h"
 #include "include/Log.h"
 #include "include/Stopwatch.h"
 
@@ -51,24 +52,25 @@ bool ReadFull(HANDLE file, uint8_t* dst, size_t total) {
 
 FileRead ReadFileRange(const std::filesystem::path& path, uint64_t offset, size_t requestedSize) {
     const Stopwatch totalTimer;
+    const std::string pathUtf8 = Encoding::PathToUtf8(path);
     const Windows::UniqueFileHandle file = OpenForSequentialRead(path);
     if (!file) {
         OSTP_LOG_DEBUG("PE::ReadFileRange open failed path={} offset=0x{:X} requested={} err={}",
-                       path.string(), offset, requestedSize, ::GetLastError());
+                       pathUtf8, offset, requestedSize, ::GetLastError());
         return {};
     }
 
     LARGE_INTEGER sizeLi{};
     if (!::GetFileSizeEx(file.get(), &sizeLi) || sizeLi.QuadPart <= 0) {
         OSTP_LOG_DEBUG("PE::ReadFileRange empty/invalid file path={} offset=0x{:X} requested={}",
-                       path.string(), offset, requestedSize);
+                       pathUtf8, offset, requestedSize);
         return {};
     }
 
     const uint64_t fileSize = static_cast<uint64_t>(sizeLi.QuadPart);
     if (offset >= fileSize) {
         OSTP_LOG_DEBUG("PE::ReadFileRange offset past EOF path={} offset=0x{:X} file_size={} elapsed_ms={:.3f}",
-                       path.string(), offset, fileSize, totalTimer.ElapsedMs());
+                       pathUtf8, offset, fileSize, totalTimer.ElapsedMs());
         return {{}, fileSize};
     }
 
@@ -82,35 +84,36 @@ FileRead ReadFileRange(const std::filesystem::path& path, uint64_t offset, size_
     seekTo.QuadPart = static_cast<LONGLONG>(offset);
     if (!::SetFilePointerEx(file.get(), seekTo, nullptr, FILE_BEGIN)) {
         OSTP_LOG_DEBUG("PE::ReadFileRange seek failed path={} offset=0x{:X} err={}",
-                       path.string(), offset, ::GetLastError());
+                       pathUtf8, offset, ::GetLastError());
         return {};
     }
 
     const Stopwatch readTimer;
     if (!ReadFull(file.get(), bytes.data(), readSize)) {
         OSTP_LOG_DEBUG("PE::ReadFileRange read failed path={} offset=0x{:X} requested={} read_size={} err={} elapsed_ms={:.3f}",
-                       path.string(), offset, requestedSize, readSize, ::GetLastError(), totalTimer.ElapsedMs());
+                       pathUtf8, offset, requestedSize, readSize, ::GetLastError(), totalTimer.ElapsedMs());
         return {};
     }
     const double readMs = readTimer.ElapsedMs();
 
     OSTP_LOG_DEBUG("PE::ReadFileRange path={} offset=0x{:X} requested={} read={} file_size={} read_ms={:.3f} total_ms={:.3f}",
-                   path.string(), offset, requestedSize, readSize, fileSize, readMs, totalTimer.ElapsedMs());
+                   pathUtf8, offset, requestedSize, readSize, fileSize, readMs, totalTimer.ElapsedMs());
 
     return {std::move(bytes), fileSize};
 }
 
 ByteBuffer ReadFileBytes(const std::filesystem::path& path) {
     const Stopwatch totalTimer;
+    const std::string pathUtf8 = Encoding::PathToUtf8(path);
     const Windows::UniqueFileHandle file = OpenForSequentialRead(path);
     if (!file) {
-        OSTP_LOG_DEBUG("PE::ReadFileBytes open failed path={} err={}", path.string(), ::GetLastError());
+        OSTP_LOG_DEBUG("PE::ReadFileBytes open failed path={} err={}", pathUtf8, ::GetLastError());
         return {};
     }
 
     LARGE_INTEGER sizeLi{};
     if (!::GetFileSizeEx(file.get(), &sizeLi) || sizeLi.QuadPart <= 0) {
-        OSTP_LOG_DEBUG("PE::ReadFileBytes empty/invalid file path={}", path.string());
+        OSTP_LOG_DEBUG("PE::ReadFileBytes empty/invalid file path={}", pathUtf8);
         return {};
     }
 
@@ -120,13 +123,13 @@ ByteBuffer ReadFileBytes(const std::filesystem::path& path) {
     const Stopwatch readTimer;
     if (!ReadFull(file.get(), bytes.data(), size)) {
         OSTP_LOG_DEBUG("PE::ReadFileBytes read failed path={} size={} err={} elapsed_ms={:.3f}",
-                       path.string(), static_cast<uint64_t>(size), ::GetLastError(), totalTimer.ElapsedMs());
+                       pathUtf8, static_cast<uint64_t>(size), ::GetLastError(), totalTimer.ElapsedMs());
         return {};
     }
     const double readMs = readTimer.ElapsedMs();
 
     OSTP_LOG_DEBUG("PE::ReadFileBytes path={} size={} read_ms={:.3f} total_ms={:.3f}",
-                   path.string(), static_cast<uint64_t>(size), readMs, totalTimer.ElapsedMs());
+                   pathUtf8, static_cast<uint64_t>(size), readMs, totalTimer.ElapsedMs());
     return bytes;
 }
 
@@ -159,19 +162,20 @@ bool Section::ContainsRva(uint32_t rva) const {
 
 Image::Image(const std::filesystem::path& path) : path_(path) {
     const Stopwatch totalTimer;
+    const std::string pathUtf8 = Encoding::PathToUtf8(path_);
     FileRead header = ReadFileRange(path, 0, kHeaderReadBytes);
     headerBytes_ = std::move(header.bytes);
     fileSize_ = header.fileSize;
     if (headerBytes_.empty()) {
         OSTP_LOG_DEBUG("PE::Image invalid empty header path={} elapsed_ms={:.3f}",
-                       path.string(), totalTimer.ElapsedMs());
+                       pathUtf8, totalTimer.ElapsedMs());
         return;
     }
 
     const auto* dos = PtrAt<IMAGE_DOS_HEADER>(headerBytes_, 0);
     if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0) {
         OSTP_LOG_DEBUG("PE::Image invalid DOS header path={} elapsed_ms={:.3f}",
-                       path.string(), totalTimer.ElapsedMs());
+                       pathUtf8, totalTimer.ElapsedMs());
         return;
     }
 
@@ -179,7 +183,7 @@ Image::Image(const std::filesystem::path& path) : path_(path) {
     const auto* signature = PtrAt<DWORD>(headerBytes_, ntOffset);
     if (!signature || *signature != IMAGE_NT_SIGNATURE) {
         OSTP_LOG_DEBUG("PE::Image invalid NT signature path={} nt_offset=0x{:X} elapsed_ms={:.3f}",
-                       path.string(), ntOffset, totalTimer.ElapsedMs());
+                       pathUtf8, ntOffset, totalTimer.ElapsedMs());
         return;
     }
 
@@ -187,7 +191,7 @@ Image::Image(const std::filesystem::path& path) : path_(path) {
     const auto* fileHeader = PtrAt<IMAGE_FILE_HEADER>(headerBytes_, fileHeaderOffset);
     if (!fileHeader || fileHeader->NumberOfSections == 0) {
         OSTP_LOG_DEBUG("PE::Image invalid file header path={} elapsed_ms={:.3f}",
-                       path.string(), totalTimer.ElapsedMs());
+                       pathUtf8, totalTimer.ElapsedMs());
         return;
     }
 
@@ -195,7 +199,7 @@ Image::Image(const std::filesystem::path& path) : path_(path) {
     const auto* magic = PtrAt<WORD>(headerBytes_, optionalOffset);
     if (!magic) {
         OSTP_LOG_DEBUG("PE::Image missing optional header path={} elapsed_ms={:.3f}",
-                       path.string(), totalTimer.ElapsedMs());
+                       pathUtf8, totalTimer.ElapsedMs());
         return;
     }
 
@@ -212,7 +216,7 @@ Image::Image(const std::filesystem::path& path) : path_(path) {
         exportDirectory = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
     } else {
         OSTP_LOG_DEBUG("PE::Image unsupported optional header path={} magic=0x{:X} elapsed_ms={:.3f}",
-                       path.string(), *magic, totalTimer.ElapsedMs());
+                       pathUtf8, *magic, totalTimer.ElapsedMs());
         return;
     }
 
@@ -221,7 +225,7 @@ Image::Image(const std::filesystem::path& path) : path_(path) {
         static_cast<size_t>(fileHeader->NumberOfSections) * sizeof(IMAGE_SECTION_HEADER);
     if (sectionsEnd > headerBytes_.size()) {
         OSTP_LOG_DEBUG("PE::Image section headers outside header buffer path={} sections={} elapsed_ms={:.3f}",
-                       path.string(), fileHeader->NumberOfSections, totalTimer.ElapsedMs());
+                       pathUtf8, fileHeader->NumberOfSections, totalTimer.ElapsedMs());
         return;
     }
 
@@ -232,7 +236,7 @@ Image::Image(const std::filesystem::path& path) : path_(path) {
             sectionsOffset + static_cast<size_t>(i) * sizeof(IMAGE_SECTION_HEADER));
         if (!section) {
             OSTP_LOG_DEBUG("PE::Image missing section header path={} index={} elapsed_ms={:.3f}",
-                           path.string(), i, totalTimer.ElapsedMs());
+                           pathUtf8, i, totalTimer.ElapsedMs());
             return;
         }
 
@@ -250,7 +254,7 @@ Image::Image(const std::filesystem::path& path) : path_(path) {
     exportDirectorySize_ = exportDirectory.Size;
     valid_ = true;
     OSTP_LOG_DEBUG("PE::Image parsed path={} file_size={} sections={} entry=0x{:X} elapsed_ms={:.3f}",
-                   path.string(), fileSize_, sections_.size(), entryPointRva_, totalTimer.ElapsedMs());
+                   pathUtf8, fileSize_, sections_.size(), entryPointRva_, totalTimer.ElapsedMs());
 }
 
 bool Image::HasSection(std::string_view name) const {

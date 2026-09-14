@@ -28,16 +28,7 @@ namespace {
     std::shared_ptr<spdlog::logger> MakeLogger(const std::string& dir,
                                                 const std::string& name) {
         auto path = OSTPlatform::Encoding::PathFromUtf8(dir) / (name + ".log");
-        std::string filename;
-#if defined(_WIN32)
-        try {
-            filename = path.string();
-        } catch (...) {
-            filename = OSTPlatform::Encoding::PathToUtf8(path);
-        }
-#else
-        filename = OSTPlatform::Encoding::PathToUtf8(path);
-#endif
+        const std::string filename = OSTPlatform::Encoding::PathToUtf8(path);
         auto logger = spdlog::basic_logger_mt(name, filename, /*truncate=*/true);
         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [tid=%t] [%s:%# %!()] %v");
         logger->flush_on(spdlog::level::trace);
@@ -144,6 +135,12 @@ namespace Log {
         LOG_INFO("OSTPlatform log sink installed -> platform module");
     }
 
+}
+
+#else
+
+namespace {
+[[maybe_unused]] int s_logTranslationUnit = 0;
 }
 
 #endif  // OPENSTEAMTOOL_LOGGING_ENABLED

@@ -8,6 +8,8 @@
 #include "Utils/Support/FnvHash.h"
 #include "Utils/SteamMetadata/IPCLoader.h"
 
+#include <algorithm>
+
 namespace {
 
     RESOLVE_FUNC(GetPipeClient, CPipeClient*, void* pEngine, HSteamPipe hSteamPipe);
@@ -143,17 +145,25 @@ namespace Hooks_IPC {
         UNHOOK_BEGIN();
         UNINSTALL_HOOK_C(IPCProcessMessage);
         UNHOOK_END();
+        g_Handlers.clear();
     }
 
     void RegisterHandlers(std::span<const IPCHandlerEntry> entries) {
         for (const auto& e : entries) {
             const auto* m = IPCLoader::Find(e.interfaceName, e.methodName);
             if (!m) {
-                LOG_IPC_WARN("[Handler Disabled] no IPC spec for {}",e.DebugString());
+                LOG_IPC_WARN("[Handler Disabled] no IPC spec for {}", e.DebugString());
                 continue;
             }
-            auto& handler = g_Handlers.emplace_back(e,*m);
-            LOG_IPC_DEBUG("Hooks_IPC: resolved {}", handler.DebugString());
+            const uint64_t key = (static_cast<uint64_t>(m->interfaceID) << 32) | m->funcHash;
+            auto it = std::ranges::find_if(g_Handlers, [key](const ResolvedHandler& h) { return h.key == key; });
+            if (it != g_Handlers.end()) {
+                *it = ResolvedHandler(e, *m);
+                LOG_IPC_DEBUG("Hooks_IPC: updated {}", it->DebugString());
+            } else {
+                auto& handler = g_Handlers.emplace_back(e, *m);
+                LOG_IPC_DEBUG("Hooks_IPC: resolved {}", handler.DebugString());
+            }
         }
     }
 

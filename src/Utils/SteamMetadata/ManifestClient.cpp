@@ -5,6 +5,7 @@
 #include "Utils/Logging/Log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <mutex>
 #include <string_view>
@@ -15,9 +16,16 @@ namespace ManifestClient {
     using Parser = bool (*)(std::string_view body, uint64_t* out);
 
     static bool ParsePlainUint(std::string_view body, uint64_t* out) {
+        while (!body.empty() && std::isspace(static_cast<unsigned char>(body.front()))) {
+            body.remove_prefix(1);
+        }
+        while (!body.empty() && std::isspace(static_cast<unsigned char>(body.back()))) {
+            body.remove_suffix(1);
+        }
+        if (body.empty()) return false;
         uint64_t code = 0;
-        auto [_, ec] = std::from_chars(body.data(), body.data() + body.size(), code);
-        if (ec != std::errc{}) return false;
+        auto [ptr, ec] = std::from_chars(body.data(), body.data() + body.size(), code);
+        if (ec != std::errc{} || ptr != body.data() + body.size()) return false;
         *out = code;
         return true;
     }

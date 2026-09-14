@@ -24,7 +24,15 @@ bool StartDetached(std::function<uint32_t()> entry) {
         0,
         [](void* param) -> DWORD {
             std::unique_ptr<std::function<uint32_t()>> fn(static_cast<std::function<uint32_t()>*>(param));
-            return static_cast<DWORD>((*fn)());
+            try {
+                return static_cast<DWORD>((*fn)());
+            } catch (const std::exception& e) {
+                OSTP_LOG_ERROR("StartDetached thread caught exception: {}", e.what());
+                return 1;
+            } catch (...) {
+                OSTP_LOG_ERROR("StartDetached thread caught unknown exception");
+                return 1;
+            }
         },
         heapEntry,
         0,

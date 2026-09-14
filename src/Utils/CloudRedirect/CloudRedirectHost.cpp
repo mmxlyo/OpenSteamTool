@@ -115,16 +115,17 @@ void Initialize(const char* steamInstallPath) {
     if (g_active.load(std::memory_order_acquire)) return;
 
     const std::filesystem::path libPath = ResolveLibraryPath(steamInstallPath, cloud.library);
+    const std::string libPathUtf8 = OSTPlatform::Encoding::PathToUtf8(libPath);
     std::error_code libEc;
     if (!std::filesystem::exists(libPath, libEc) || libEc) {
-        LOG_WARN("CloudRedirect: cloud_redirect.dll not found at {}", libPath.string());
+        LOG_WARN("CloudRedirect: cloud_redirect.dll not found at {}", libPathUtf8);
         return;
     }
 
     g_module = OSTPlatform::DynamicLibrary::Load(libPath);
     if (!g_module) {
         LOG_WARN("CloudRedirect: failed to load {} (err={})",
-                 libPath.string(), OSTPlatform::DynamicLibrary::GetLastErrorCode());
+                 libPathUtf8, OSTPlatform::DynamicLibrary::GetLastErrorCode());
         return;
     }
 
@@ -158,7 +159,7 @@ void Initialize(const char* steamInstallPath) {
 
     g_active.store(true, std::memory_order_release);
     LOG_INFO("CloudRedirect: loaded {} and initialised cloud save redirection (diversion: {:p})",
-             libPath.string(), static_cast<void*>(client_hModule));
+             libPathUtf8, static_cast<void*>(client_hModule));
 
     if (g_enableStatsSync) {
         g_enableStatsSync(true, true);

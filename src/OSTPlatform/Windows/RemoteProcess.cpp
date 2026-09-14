@@ -132,7 +132,7 @@ std::optional<uintptr_t> ResolveRemoteExport(
     const auto exported = image.FindExport(symbolName);
     if (!exported) {
         OSTP_LOG_WARN("ResolveRemoteExport: export {}!{} not found",
-                      module->path.string(), std::string(symbolName));
+                      Encoding::PathToUtf8(module->path), std::string(symbolName));
         return std::nullopt;
     }
 
@@ -269,7 +269,7 @@ InjectStatus InjectLibrary(uint32_t pid, const std::filesystem::path& libraryPat
         return InjectStatus::RemoteLoadFailed;
     }
     if (exitCode == 0) {
-        OSTP_LOG_WARN("Remote LoadLibraryW returned 0 for '{}'", libraryPath.string());
+        OSTP_LOG_WARN("Remote LoadLibraryW returned 0 for '{}'", Encoding::PathToUtf8(libraryPath));
         return InjectStatus::RemoteLoadFailed;
     }
 
