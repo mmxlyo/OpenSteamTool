@@ -54,9 +54,9 @@ namespace {
         return nullptr;
     }
 
-    static void HandleHandshake(void* pServer, HSteamPipe hSteamPipe, const IPCMessages::IPCRequest& request)
+    static void HandleHandshake(void* pServer, HSteamPipe hSteamPipe, std::span<uint8> body)
     {
-        IPCMessages::IPCHandshakeReq handshake{request.body()};
+        IPCMessages::IPCHandshakeReq handshake{body};
         if (!handshake.ok()) return;
 
         CPipeClient* pipe = GetPipe(pServer, hSteamPipe);
@@ -80,7 +80,7 @@ namespace {
 
         // 1. Handshake messages
         if (cmd == EIPCCommand::Handshake) {
-            HandleHandshake(pServer, hSteamPipe, request);
+            HandleHandshake(pServer, hSteamPipe, request.body());
             return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
         }
 

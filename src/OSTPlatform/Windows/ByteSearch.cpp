@@ -177,6 +177,9 @@ std::optional<uint64_t> FindInFileRange(
         OVERLAPPED* ov = nullptr;
         int* pendingSlot = nullptr;
 
+        PendingDrainGuard(HANDLE f, OVERLAPPED* o, int* p) noexcept
+            : file(f), ov(o), pendingSlot(p) {}
+
         void Drain() {
             if (pendingSlot && *pendingSlot >= 0 && file && ov) {
                 ::CancelIoEx(file, &ov[*pendingSlot]);
@@ -189,7 +192,7 @@ std::optional<uint64_t> FindInFileRange(
         ~PendingDrainGuard() {
             Drain();
         }
-    } drainGuard{file.get(), ov, &pendingSlot};
+    } drainGuard(file.get(), ov, &pendingSlot);
 
     uint64_t bytesReadTotal = 0;
     size_t chunks = 0;
