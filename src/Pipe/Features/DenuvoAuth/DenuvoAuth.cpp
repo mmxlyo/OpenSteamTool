@@ -7,6 +7,7 @@
 #include "OSTPlatform/include/SteamCredentialStore.h"
 
 #include <cwctype>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -139,7 +140,7 @@ namespace {
         }
     };
 
-    // All access runs on the single Steam IPC thread, so these need no lock.
+    std::mutex g_authMutex;
     std::unordered_map<ProcessKey, ProcessAuth, ProcessKeyHash> g_processAuth;
     std::unordered_map<PipeKey, ProcessKey, PipeKeyHash> g_pipeProcess;
 
@@ -179,6 +180,7 @@ void Apply(const PipeContext& ctx) {
     const PipeKey pipeKey = MakePipeKey(ctx.pipe);
     if (!pipeKey.IsValid()) return;
 
+    std::lock_guard lock(g_authMutex);
     ProcessAuth& auth = g_processAuth[ctx.process];
     g_pipeProcess[pipeKey] = ctx.process;
 
@@ -193,6 +195,7 @@ bool IsAuthorizedPipe(const CPipeClient* pipe) {
     }
 
     const PipeKey pipeKey = MakePipeKey(pipe);
+    std::lock_guard lock(g_authMutex);
     const ProcessAuth* auth = FindAuthForPipe(pipeKey);
     if (!auth) {
         LOG_PIPE_TRACE("DenuvoAuth: pipe not tracked by DenuvoAuth {}", pipeKey.DebugString());

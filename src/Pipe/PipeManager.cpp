@@ -71,32 +71,43 @@ namespace {
     AppId_t ResolveAppIdWithRetry(const ProcessInspector::ProcessSnapshot& snapshot, bool& outFromPipe) {
         outFromPipe = false;
 
+        // Steam's own internal processes (steam.exe, steamwebhelper, etc.) are never games.
+        if (snapshot.steamClientProcess) {
+            return k_uAppIdInvalid;
+        }
+
         const AppId_t envAppId = snapshot.ResolveAppId();
         if (envAppId != k_uAppIdInvalid) return envAppId;
 
-        for (int attempt = 0; attempt < kAppIdResolveRetries; ++attempt) {
-            const AppId_t pipeAppId = Hooks_Misc::ResolveAppId();
-            if (pipeAppId != k_uAppIdInvalid) {
-                outFromPipe = true;
-                if (attempt > 0) {
-                    LOG_PIPE_DEBUG("PipeManager: pipe appid resolved on retry attempt={} appid={}",
-                                   attempt, pipeAppId);
-                }
-                return pipeAppId;
-            }
-            std::this_thread::sleep_for(kAppIdResolveRetryDelay);
-        }
-
-        // Neither env var nor IPC pipe binding resolved an appid — the game
-        // launched without SteamAppId and never called IClientUtils::GetAppID
-        // in the retry window. Fall back to an explicit process-name mapping
-        // from addprocess() in LuaConfig (e.g. NBA 2K26, Suicide Squad: KTJL).
+        // Fall back to an explicit process-name mapping from addprocess() in LuaConfig
+        // (checked before sleeping to avoid delay for configured processes).
         if (!snapshot.imageName.empty()) {
             const AppId_t configAppId = LuaConfig::GetAppIdForProcess(snapshot.imageName);
             if (configAppId != k_uAppIdInvalid) {
                 LOG_PIPE_DEBUG("PipeManager: process-name config appid image={} appid={}",
                                snapshot.imageName, configAppId);
                 return configAppId;
+            }
+        }
+
+        // Check pipe appid immediately first without sleeping.
+        const AppId_t initialPipeAppId = Hooks_Misc::ResolveAppId();
+        if (initialPipeAppId != k_uAppIdInvalid) {
+            outFromPipe = true;
+            return initialPipeAppId;
+        }
+
+        // For non-game client processes without steam environment, limit retry count
+        // to avoid stalling the IPC handshake thread for 200ms.
+        const int maxRetries = snapshot.likelyGameProcess ? kAppIdResolveRetries : 2;
+        for (int attempt = 1; attempt < maxRetries; ++attempt) {
+            std::this_thread::sleep_for(kAppIdResolveRetryDelay);
+            const AppId_t pipeAppId = Hooks_Misc::ResolveAppId();
+            if (pipeAppId != k_uAppIdInvalid) {
+                outFromPipe = true;
+                LOG_PIPE_DEBUG("PipeManager: pipe appid resolved on retry attempt={} appid={}",
+                               attempt, pipeAppId);
+                return pipeAppId;
             }
         }
 

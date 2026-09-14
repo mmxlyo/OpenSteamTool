@@ -71,9 +71,9 @@ namespace ManifestClient {
         return false;
     }
 
-    const char* ActiveProviderName() {
+    std::string_view ActiveProviderName() {
         std::lock_guard<std::mutex> lock(g_mutex);
-        return g_active->name.data(); 
+        return g_active->name; 
     }
 
     // ── request ───────────────────────────────────────────────────

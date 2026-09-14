@@ -45,10 +45,10 @@ inline char LuaDir[kRuntimePathCapacity]           = {};
 inline char ConfigPath[kRuntimePathCapacity]       = {};
 inline char DllDir[kRuntimePathCapacity]           = {};
 
-inline bool g_IsPortableMode = false;
+inline std::atomic<bool> g_IsPortableMode{false};
 
 inline bool IsPortableMode() {
-    return g_IsPortableMode;
+    return g_IsPortableMode.load(std::memory_order_relaxed);
 }
 
 inline const char* GetStorageDirectory() {

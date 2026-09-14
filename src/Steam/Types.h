@@ -4,8 +4,6 @@
 
 #include <cstdint>
 
-#include <cstdint>
-
 typedef unsigned char byte;
 typedef int32_t int32;
 typedef int64_t int64;

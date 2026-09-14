@@ -16,7 +16,7 @@ namespace ManifestClient {
     bool SetProvider(std::string_view name);
 
     // Name of the currently active provider (for logging / diagnostics).
-    const char* ActiveProviderName();
+    std::string_view ActiveProviderName();
 
     // Resolve a manifest GID to its request code. Tries Lua first
     // (fetch_manifest_code_ex, then fetch_manifest_code), then the

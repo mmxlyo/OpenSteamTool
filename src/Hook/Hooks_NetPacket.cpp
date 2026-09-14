@@ -212,6 +212,7 @@ namespace Hooks_NetPacket_AccessToken {
 namespace Hooks_NetPacket_UserStats {
 
     // jobid_source -> appid mapping (eMsg 151 request -> eMsg 147 response)
+    std::mutex g_JobMutex;
     std::unordered_map<uint64, AppId_t> g_JobIdToAppId;
 
     // ── Send: CPlayer_GetUserStats_Request (eMsg 151) ──────────
@@ -247,6 +248,7 @@ namespace Hooks_NetPacket_UserStats {
         CMsgProtoBufHeader hdr;
         if (hdr.ParseFromArray(pHdr, cbHdr) && hdr.has_jobid_source()) {
             uint64 jobId = hdr.jobid_source();
+            std::lock_guard<std::mutex> lock(g_JobMutex);
             g_JobIdToAppId[jobId] = appId;
             LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats request: stored jobid={} -> appid={}", jobId, appId);
         }
@@ -282,6 +284,7 @@ namespace Hooks_NetPacket_UserStats {
         bool hasAppId = false;
         if (hdrMsg.has_jobid_target()) {
             uint64 jobId = hdrMsg.jobid_target();
+            std::lock_guard<std::mutex> lock(g_JobMutex);
             auto it = g_JobIdToAppId.find(jobId);
             if (it != g_JobIdToAppId.end()) {
                 appId = it->second;
@@ -413,54 +416,6 @@ namespace Hooks_NetPacket_UserStats {
 
 } // namespace Hooks_NetPacket_UserStats
 
-
-// ════════════════════════════════════════════════════════════════
-//  Hooks_NetPacket_ETicket
-//
-//  Incoming: CMsgClientRequestEncryptedAppTicketResponse (eMsg 5527)
-// ════════════════════════════════════════════════════════════════
-namespace Hooks_NetPacket_ETicket {
-
-    void HandleEncryptedAppTicketResponse(const uint8* pBody, uint32 cbBody)
-    {
-        CMsgClientRequestEncryptedAppTicketResponse resp;
-        if (!resp.ParseFromArray(pBody, cbBody)) {
-            LOG_NETPACKET_WARN("ClientRequestEncryptedAppTicketResponse: failed to ParseFromArray");
-            return;
-        }
-        LOG_NETPACKET_DEBUG("ClientRequestEncryptedAppTicketResponse: original body:\n{}", resp.DebugString());
-
-        if (resp.eresult() == k_EResultOK) return;
-        if (!LuaConfig::HasDepot(resp.app_id())) return;
-
-        auto ticket = AppTicket::GetEncryptedTicketFromCredentialStore(resp.app_id());
-        if (ticket.empty()) return;
-
-        if (!resp.mutable_encrypted_app_ticket()->ParseFromArray(
-                ticket.data(), static_cast<int>(ticket.size()))) {
-            LOG_NETPACKET_WARN("ClientRequestEncryptedAppTicketResponse: failed to ParseFromArray EncryptedAppTicket");
-            return;
-        }
-
-        resp.set_eresult(k_EResultOK);
-
-        auto encSize = resp.ByteSizeLong();
-        if (encSize > sizeof(g_NewBody)) {
-            LOG_NETPACKET_WARN("ClientRequestEncryptedAppTicketResponse: modified message too large");
-            return;
-        }
-        if (!resp.SerializeToArray(g_NewBody, sizeof(g_NewBody))) {
-            LOG_NETPACKET_WARN("ClientRequestEncryptedAppTicketResponse: failed to SerializeToArray modified response");
-            return;
-        }
-        
-        LOG_NETPACKET_DEBUG("ClientRequestEncryptedAppTicketResponse: modified body:\n{}", resp.DebugString());
-
-        g_cbNewBody = static_cast<uint32>(encSize);
-        g_NeedReplaceBody = true;
-    }
-
-} // namespace Hooks_NetPacket_ETicket
 
 
 // ════════════════════════════════════════════════════════════════
@@ -681,8 +636,9 @@ namespace Hooks_NetPacket_Manifest {
 // ════════════════════════════════════════════════════════════════
 namespace Hooks_NetPacket_RichPresence {
 
-    AppId_t g_PlayingAppId = 0;
-    uint64  g_LocalSteamId = 0;
+    std::mutex           g_RPMutex;
+    std::atomic<AppId_t> g_PlayingAppId{0};
+    uint64               g_LocalSteamId = 0;
 
     // Most recent self-PersonaState bytes captured from a real server push.
     // Reused as the template every game launch.
@@ -823,33 +779,42 @@ namespace Hooks_NetPacket_RichPresence {
     // and stage a fresh PersonaState inject.
     void TrackRPSend(const uint8* pBody, uint32 cbBody)
     {
-        if (g_LocalSteamId == 0 || g_PlayingAppId == 0) return;
+        const AppId_t playingAppId = g_PlayingAppId.load(std::memory_order_relaxed);
+        if (playingAppId == 0) return;
 
         CMsgClientRichPresenceUpload up;
         if (!up.ParseFromArray(pBody, cbBody)) return;
         if (!up.has_rich_presence_kv()) return;
 
         const std::string& kv = up.rich_presence_kv();
-        auto& kvs = g_RPKvsByAppId[g_PlayingAppId];
-        kvs.clear();
+        std::vector<std::pair<std::string, std::string>> kvs;
         ExtractStringKVs(reinterpret_cast<const uint8*>(kv.data()),
                          static_cast<uint32>(kv.size()), kvs);
         LOG_RICHPRESENCE_DEBUG("RP upload appid={}: kv_bytes={} extracted={} pairs",
-            g_PlayingAppId, kv.size(), kvs.size());
+            playingAppId, kv.size(), kvs.size());
 
-        if (BuildInject(g_PlayingAppId)) g_InjectPending = true;
+        std::lock_guard lock(g_RPMutex);
+        g_RPKvsByAppId[playingAppId] = std::move(kvs);
+        if (BuildInject(playingAppId)) g_InjectPending = true;
     }
 
     void TrackSend(const CMsgClientGamesPlayed& msg, const uint8* pHdr, uint32 cbHdr)
     {
-        if (g_LocalSteamId == 0) {
-            CMsgProtoBufHeader hdr;
-            if (hdr.ParseFromArray(pHdr, cbHdr) && hdr.has_steamid() && hdr.steamid()) {
-                g_LocalSteamId = hdr.steamid();
-                LOG_RICHPRESENCE_DEBUG("Captured local SteamID 0x{:X}", g_LocalSteamId);
-                CloudRedirectHost::SetAccountId(
-                    static_cast<uint32_t>(g_LocalSteamId & 0xFFFFFFFF));
+        uint64 localSteamId = 0;
+        {
+            std::lock_guard lock(g_RPMutex);
+            if (g_LocalSteamId == 0) {
+                CMsgProtoBufHeader hdr;
+                if (hdr.ParseFromArray(pHdr, cbHdr) && hdr.has_steamid() && hdr.steamid()) {
+                    g_LocalSteamId = hdr.steamid();
+                    localSteamId = g_LocalSteamId;
+                    LOG_RICHPRESENCE_DEBUG("Captured local SteamID 0x{:X}", g_LocalSteamId);
+                }
             }
+        }
+        if (localSteamId != 0) {
+            CloudRedirectHost::SetAccountId(
+                static_cast<uint32_t>(localSteamId & 0xFFFFFFFF));
         }
 
         // Steam stacks running games in games_played; the banner follows
@@ -868,15 +833,15 @@ namespace Hooks_NetPacket_RichPresence {
         if (topmost != 0 && topmost != kOnlineFixAppId && LuaConfig::HasDepot(topmost))
             newTracked = topmost;
 
-        if (g_PlayingAppId == newTracked) return;
-        AppId_t oldTracked = g_PlayingAppId;
-        g_PlayingAppId = newTracked;
+        const AppId_t oldTracked = g_PlayingAppId.exchange(newTracked);
+        if (oldTracked == newTracked) return;
 
         if (oldTracked != 0)
             CloudRedirectHost::NotifyAppRunning(oldTracked, false);
         if (newTracked != 0)
             CloudRedirectHost::NotifyAppRunning(newTracked, true);
 
+        std::lock_guard lock(g_RPMutex);
         if (newTracked != 0) {
             LOG_RICHPRESENCE_INFO("Tracking topmost appid {}", newTracked);
             if (BuildInject(newTracked)) g_InjectPending = true;
@@ -900,6 +865,7 @@ namespace Hooks_NetPacket_RichPresence {
         CMsgClientPersonaState msg;
         if (!msg.ParseFromArray(pBody, cbBody)) return false;
 
+        std::lock_guard lock(g_RPMutex);
         CMsgClientPersonaState::Friend* selfEntry = nullptr;
         for (int i = 0; i < msg.friends_size(); ++i) {
             auto* f = msg.mutable_friends(i);
@@ -922,9 +888,10 @@ namespace Hooks_NetPacket_RichPresence {
             g_HaveSelfCached = true;
         }
 
-        if (g_PlayingAppId == 0) return false;
+        const AppId_t playingAppId = g_PlayingAppId.load(std::memory_order_relaxed);
+        if (playingAppId == 0) return false;
 
-        ApplyGameFields(msg, selfEntry, g_PlayingAppId);
+        ApplyGameFields(msg, selfEntry, playingAppId);
         g_cbNewBody = static_cast<uint32>(msg.ByteSizeLong());
         if (g_cbNewBody > kMaxBodySize) {
             LOG_RICHPRESENCE_WARN("In-place patch too large ({} bytes)", g_cbNewBody);
@@ -934,7 +901,7 @@ namespace Hooks_NetPacket_RichPresence {
             LOG_RICHPRESENCE_WARN("In-place patch SerializeToArray failed");
             return false;
         }
-        LOG_RICHPRESENCE_INFO("Patched live self push with appid {}", g_PlayingAppId);
+        LOG_RICHPRESENCE_INFO("Patched live self push with appid {}", playingAppId);
         return true;
     }
 
@@ -943,17 +910,24 @@ namespace Hooks_NetPacket_RichPresence {
     void TryInject(void* pThis, CNetPacket* pCarrier,
                    bool (*invokeOriginal)(void*, CNetPacket*))
     {
-        if (!g_InjectPending || g_cbInjectPkt == 0) return;
-        g_InjectPending = false;
+        uint8 injectCopy[kMaxPacketSize];
+        uint32 injectSize = 0;
+        {
+            std::lock_guard lock(g_RPMutex);
+            if (!g_InjectPending || g_cbInjectPkt == 0) return;
+            g_InjectPending = false;
+            injectSize = g_cbInjectPkt;
+            std::memcpy(injectCopy, g_InjectPkt, injectSize);
+        }
 
         uint8* origData = pCarrier->m_pubData;
         uint32 origSize = pCarrier->m_cubData;
-        pCarrier->m_pubData = g_InjectPkt;
-        pCarrier->m_cubData = g_cbInjectPkt;
+        pCarrier->m_pubData = injectCopy;
+        pCarrier->m_cubData = injectSize;
         invokeOriginal(pThis, pCarrier);
         pCarrier->m_pubData = origData;
         pCarrier->m_cubData = origSize;
-        LOG_RICHPRESENCE_INFO("Delivered manufactured self-PersonaState ({} bytes)", g_cbInjectPkt);
+        LOG_RICHPRESENCE_INFO("Delivered manufactured self-PersonaState ({} bytes)", injectSize);
     }
 
 } // namespace Hooks_NetPacket_RichPresence
@@ -1327,11 +1301,6 @@ namespace {
             return;
         }
 
-        // migrated to IPC Layer Hooks_IPC_ISteamUser::GetEncryptedAppTicketResponse
-        // case k_EMsgClientRequestEncryptedAppTicketResponse:     // 5527
-        //     Hooks_NetPacket_ETicket::HandleEncryptedAppTicketResponse(pBody, cbBody);
-        //     return;
-
         case k_EMsgClientGetUserStatsResponse:     // 819
             g_NeedReplaceBody = Hooks_NetPacket_UserStats::HandleRecv_ClientGetUserStatsResponse(
                 pBody, cbBody);
@@ -1358,6 +1327,9 @@ namespace {
     //  Hooks
     // ════════════════════════════════════════════════════════════
 
+    std::mutex g_SendMutex;
+    std::mutex g_RecvMutex;
+
     HOOK_FUNC(BBuildAndAsyncSendFrame, bool,
               void* pObject, EWebSocketOpCode eWebSocketOpCode,
               uint8* pubData, uint32 cubData)
@@ -1365,6 +1337,7 @@ namespace {
         if (eWebSocketOpCode != k_eWebSocketOpCode_Binary)
             return oBBuildAndAsyncSendFrame(pObject, eWebSocketOpCode, pubData, cubData);
 
+        std::lock_guard lock(g_SendMutex);
         EMsg eMsg;
         const uint8 *pHdr, *pBody;
         uint32 cbHdr, cbBody;
@@ -1397,6 +1370,7 @@ namespace {
 
     HOOK_FUNC(RecvPkt, void*, void* pThis, CNetPacket* pPacket)
     {
+        std::lock_guard lock(g_RecvMutex);
         Hooks_NetPacket_RichPresence::TryInject(
             pThis, pPacket,
             [](void* pT, CNetPacket* pP) -> bool { return oRecvPkt(pT, pP) != nullptr; });

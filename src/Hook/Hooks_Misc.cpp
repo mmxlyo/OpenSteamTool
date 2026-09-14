@@ -82,27 +82,6 @@ namespace {
                                     a8, a9, a10, a11);
     }
 
-    // CAppInfoCache::GetOrAddAppData
-    // The injected package keeps Lua-provided ids in PackageInfo::AppIdVec.
-    // Some of those ids can actually be depot ids, but we cannot trust the
-    // Lua config to classify app ids and depot ids for us. In offline mode,
-    // depot ids usually have only placeholder appinfo data. That blocks
-    // CClientAppManager_ProcessPendingLicenseUpdates, because it waits for
-    // every AppIdVec entry to have resolved appinfo unless the entry has been
-    // marked as a known-unknown id by the PICS path. For injected ids that
-    // still have placeholder appinfo, set skip_flag so Steam treats them like
-    // PICS unknown_appids instead of keeping the license update pending.
-    HOOK_FUNC(GetOrAddAppData,CAppData*,void* pCache, AppId_t appId,bool bCreate)
-    {
-        CAppData* pData = oGetOrAddAppData(pCache, appId, bCreate);
-        // LOG_MISC_TRACE("GetOrAddAppData: appId={} bCreate={} -> pData={}", appId, bCreate, pData ? pData->DebugString() : "null");
-        // TODO: find a more robust way
-        if (LuaConfig::HasDepot(appId, false) && pData && !bCreate && pData->IsUnresolvedAppInfo()) {
-            LOG_MISC_DEBUG("GetOrAddAppData: Marking appId {} as skip_flag=true to bypass license update blocking", appId);
-            pData->bSkipFlag = true;
-        }
-        return pData;
-    }
 }
 
 namespace Hooks_Misc {
@@ -117,7 +96,6 @@ namespace Hooks_Misc {
         HOOK_BEGIN();
         INSTALL_HOOK_C(BuildSpawnEnvBlock);
         INSTALL_HOOK_C(OptedInMask);
-        // INSTALL_HOOK_C(GetOrAddAppData);
         HOOK_END();
     }
 
@@ -125,7 +103,6 @@ namespace Hooks_Misc {
         UNHOOK_BEGIN();
         UNINSTALL_HOOK(BuildSpawnEnvBlock);
         UNINSTALL_HOOK(OptedInMask);
-        // UNINSTALL_HOOK(GetOrAddAppData);
         UNHOOK_END();
     }
 

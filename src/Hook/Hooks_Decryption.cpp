@@ -29,23 +29,27 @@ namespace {
         // Expected shape: ".../<DepotId>\DecryptionKey" or ".../<DepotId>/DecryptionKey"
         if (size_t last = name.rfind("DecryptionKey"); last != std::string_view::npos && last > 0) {
             if (name[last - 1] == '\\' || name[last - 1] == '/') {
-                size_t sep = last - 1;
-                size_t start = name.find_last_of("\\/", sep > 0 ? sep - 1 : 0);
-                size_t idStart = (start == std::string_view::npos) ? 0 : start + 1;
-                std::string_view idStr = name.substr(idStart, sep - idStart);
+                const size_t sep = last - 1;
+                if (sep > 0) {
+                    const size_t start = name.find_last_of("\\/", sep - 1);
+                    const size_t idStart = (start == std::string_view::npos) ? 0 : start + 1;
+                    if (idStart < sep) {
+                        const std::string_view idStr = name.substr(idStart, sep - idStart);
 
-                AppId_t depotId = 0;
-                auto [ptr, ec] = std::from_chars(idStr.data(), idStr.data() + idStr.size(), depotId);
-                if (ec == std::errc{} && ptr == idStr.data() + idStr.size() && depotId != 0) {
-                    if (const auto& key = LuaConfig::GetDecryptionKey(depotId); !key.empty()) {
-                        if (KeySize >= key.size()) {
-                            LOG_DECRYPTIONKEY_INFO("Providing decryption key for depot {}: {}", depotId,
-                                                   spdlog::to_hex(key.data(), key.data() + key.size()));
-                            std::memcpy(Key, key.data(), key.size());
-                            return static_cast<int32>(key.size());
+                        AppId_t depotId = 0;
+                        auto [ptr, ec] = std::from_chars(idStr.data(), idStr.data() + idStr.size(), depotId);
+                        if (ec == std::errc{} && ptr == idStr.data() + idStr.size() && depotId != 0) {
+                            if (const auto& key = LuaConfig::GetDecryptionKey(depotId); !key.empty()) {
+                                if (KeySize >= key.size()) {
+                                    LOG_DECRYPTIONKEY_INFO("Providing decryption key for depot {}: {}", depotId,
+                                                           spdlog::to_hex(key.data(), key.data() + key.size()));
+                                    std::memcpy(Key, key.data(), key.size());
+                                    return static_cast<int32>(key.size());
+                                }
+                                LOG_DECRYPTIONKEY_WARN("Decryption key for depot {} is too large ({} bytes) for buffer ({} bytes)",
+                                                        depotId, key.size(), KeySize);
+                            }
                         }
-                        LOG_DECRYPTIONKEY_WARN("Decryption key for depot {} is too large ({} bytes) for buffer ({} bytes)",
-                                                depotId, key.size(), KeySize);
                     }
                 }
             }

@@ -14,11 +14,13 @@
 #include <lua.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -28,9 +30,11 @@ extern "C" {
 }
 
 namespace LuaConfig{
+    static std::shared_mutex g_configSharedMutex;
+    static std::mutex g_luaStateMutex;
     static lua_State* g_lua_state = nullptr;
-    static bool g_hasManifestCodeFunc = false;
-    static bool g_hasManifestCodeFuncEx = false;
+    static std::atomic<bool> g_hasManifestCodeFunc{false};
+    static std::atomic<bool> g_hasManifestCodeFuncEx{false};
     std::unordered_map<AppId_t, std::string>DepotKeySet{};
     std::unordered_map<AppId_t, uint64_t>AccessTokenSet{};
     std::unordered_set<AppId_t> PinnedApps{};
@@ -497,6 +501,7 @@ namespace LuaConfig{
 
     // ── init / cleanup ───────────────────────────────────────────
     static bool Initialize() {
+        std::lock_guard lock(g_luaStateMutex);
         if (g_lua_state)
             return true;
         g_lua_state = luaL_newstate();
@@ -537,11 +542,13 @@ namespace LuaConfig{
     }
 
     static void Cleanup() {
+        std::lock_guard lock(g_luaStateMutex);
         if (g_lua_state) {
             lua_close(g_lua_state);
             g_lua_state = nullptr;
         }
         g_hasManifestCodeFunc = false;
+        g_hasManifestCodeFuncEx = false;
     }
 
     // ── public query API ─────────────────────────────────────────
@@ -549,37 +556,45 @@ namespace LuaConfig{
         std::string lower(imageName);
         for (char& ch : lower)
             ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        std::shared_lock lock(g_configSharedMutex);
         const auto it = ProcessNameAppIdMap.find(lower);
         return it != ProcessNameAppIdMap.end() ? it->second : k_uAppIdInvalid;
     }
 
     bool IsForcedDenuvo(AppId_t appId) {
+        std::shared_lock lock(g_configSharedMutex);
         return ForcedDenuvoSet.count(appId) > 0;
     }
 
     bool IsNoDenuvo(AppId_t appId) {
+        std::shared_lock lock(g_configSharedMutex);
         return NoDenuvoSet.count(appId) > 0;
     }
 
-    const std::string& GetEticketUrl() {
+    std::string GetEticketUrl() {
+        std::shared_lock lock(g_configSharedMutex);
         return EticketUrl;
     }
 
-    bool HasDepot(AppId_t DepotId,bool excludeOwned) {
-        return DepotKeySet.count(DepotId) && (!excludeOwned || !IsOwned(DepotId));
+    bool HasDepot(AppId_t DepotId, bool excludeOwned) {
+        std::shared_lock lock(g_configSharedMutex);
+        return DepotKeySet.count(DepotId) && (!excludeOwned || !OwnedAppIdSet.count(DepotId));
     }
 
     bool IsOwned(AppId_t AppId) {
-        return OwnedAppIdSet.count(AppId);
+        std::shared_lock lock(g_configSharedMutex);
+        return OwnedAppIdSet.count(AppId) > 0;
     }
 
     void MarkOwned(AppId_t AppId) {
+        std::unique_lock lock(g_configSharedMutex);
         if (OwnedAppIdSet.insert(AppId).second) {
             LOG_PACKAGE_INFO("Marking app {} as owned", AppId);
         }
     }
 
     std::vector<AppId_t> GetAllDepotIds() {
+        std::shared_lock lock(g_configSharedMutex);
         std::vector<AppId_t> DepotIds;
         DepotIds.reserve(DepotKeySet.size());
         for (const auto& pair : DepotKeySet) {
@@ -589,26 +604,38 @@ namespace LuaConfig{
     }
 
     std::vector<uint8> GetDecryptionKey(AppId_t DepotId) {
-        auto it = DepotKeySet.find(DepotId);
-        if (it != DepotKeySet.end()) {
-            return ParseHexStringToBytes(it->second.data(), it->second.size());
+        std::string keyCopy;
+        {
+            std::shared_lock lock(g_configSharedMutex);
+            auto it = DepotKeySet.find(DepotId);
+            if (it != DepotKeySet.end()) {
+                keyCopy = it->second;
+            }
+        }
+        if (!keyCopy.empty()) {
+            return ParseHexStringToBytes(keyCopy.data(), keyCopy.size());
         }
         return {};
     }
 
     uint64_t GetAccessToken(AppId_t AppId) {
+        std::shared_lock lock(g_configSharedMutex);
         auto it = AccessTokenSet.find(AppId);
         return it != AccessTokenSet.end() ? it->second : 0;
     }
 
     bool pinApp(AppId_t AppId) {
-        return PinnedApps.count(AppId);
+        std::shared_lock lock(g_configSharedMutex);
+        return PinnedApps.count(AppId) > 0;
     }
 
     uint64_t GetStatSteamId(AppId_t AppId) {
-        auto it = StatSteamIdSet.find(AppId);
-        if (it != StatSteamIdSet.end())
-            return it->second;
+        {
+            std::shared_lock lock(g_configSharedMutex);
+            auto it = StatSteamIdSet.find(AppId);
+            if (it != StatSteamIdSet.end())
+                return it->second;
+        }
         uint64_t apiSteamId = 0;
         if (StatsClient::FetchStatSteamId(AppId, &apiSteamId))
             return apiSteamId;
@@ -616,20 +643,26 @@ namespace LuaConfig{
     }
 
     uint32_t GetPurchaseTime(AppId_t AppId) {
+        std::shared_lock lock(g_configSharedMutex);
         auto it = g_purchaseTime.find(AppId);
         return it != g_purchaseTime.end() ? it->second : 0;
     }
 
-    const std::unordered_map<uint64_t, ManifestOverride>& GetManifestOverrides() {
-      return ManifestOverrides;
+    std::unordered_map<uint64_t, ManifestOverride> GetManifestOverrides() {
+        std::shared_lock lock(g_configSharedMutex);
+        return ManifestOverrides;
     }
 
     bool HasManifestCodeFunc() {
-        return g_hasManifestCodeFunc;
+        return g_hasManifestCodeFunc.load(std::memory_order_relaxed);
     }
 
     bool CallManifestFetchCode(uint64_t gid, uint64_t* outCode) {
-        if (!g_hasManifestCodeFunc || !g_lua_state)
+        if (!g_hasManifestCodeFunc.load(std::memory_order_relaxed))
+            return false;
+
+        std::lock_guard lock(g_luaStateMutex);
+        if (!g_lua_state)
             return false;
 
         lua_getglobal(g_lua_state, "fetch_manifest_code");
@@ -676,11 +709,15 @@ namespace LuaConfig{
     }
 
     bool HasManifestCodeFuncEx() {
-        return g_hasManifestCodeFuncEx;
+        return g_hasManifestCodeFuncEx.load(std::memory_order_relaxed);
     }
 
     bool CallManifestFetchCodeEx(uint64_t app_id, uint64_t depot_id, uint64_t gid, uint64_t* outCode) {
-        if (!g_hasManifestCodeFuncEx || !g_lua_state)
+        if (!g_hasManifestCodeFuncEx.load(std::memory_order_relaxed))
+            return false;
+
+        std::lock_guard lock(g_luaStateMutex);
+        if (!g_lua_state)
             return false;
 
         lua_getglobal(g_lua_state, "fetch_manifest_code_ex");
@@ -732,7 +769,7 @@ namespace LuaConfig{
     //   Denuvo offline tokens/tickets against accidental wiping during edits.
     // - On explicit file deletion (LuaFileWatcher delete event): passed as true,
     //   triggering physical deletion once all referencing lua files and depots drop to 0.
-    void UnloadFile(const std::string& rawFilePath, bool isPermanentRemoval) {
+    static void UnloadFileLocked(const std::string& rawFilePath, bool isPermanentRemoval) {
         std::string filePath = OSTPlatform::Encoding::PathToUtf8(
             OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal());
         auto depotsIt = g_fileDepots.find(filePath);
@@ -792,6 +829,11 @@ namespace LuaConfig{
         g_fileMtime.erase(filePath);
     }
 
+    void UnloadFile(const std::string& rawFilePath, bool isPermanentRemoval) {
+        std::unique_lock lock(g_configSharedMutex);
+        UnloadFileLocked(rawFilePath, isPermanentRemoval);
+    }
+
     static bool StartsWithCaseInsensitive(std::string_view str, std::string_view prefix) {
         if (prefix.empty()) return true;
         if (str.empty()) return false;
@@ -802,6 +844,7 @@ namespace LuaConfig{
     }
 
     uint32_t UnloadDirectory(const std::string& rawDirPath) {
+        std::unique_lock lock(g_configSharedMutex);
         std::string dirPath = OSTPlatform::Encoding::PathToUtf8(
             OSTPlatform::Encoding::PathFromUtf8(rawDirPath).lexically_normal());
         if (dirPath.empty()) return 0;
@@ -836,18 +879,20 @@ namespace LuaConfig{
 
         for (const auto& filePath : toUnload) {
             LOG_PACKAGE_INFO("UnloadDirectory: unloading file '{}' from removed dir '{}'", filePath, rawDirPath);
-            UnloadFile(filePath, true);
+            UnloadFileLocked(filePath, true);
         }
         return static_cast<uint32_t>(toUnload.size());
     }
 
     std::vector<AppId_t> TakePendingRemovals() {
+        std::unique_lock lock(g_configSharedMutex);
         std::vector<AppId_t> result;
         result.swap(g_pendingRemovals);
         return result;
     }
 
     std::vector<AppId_t> TakePendingAdditions() {
+        std::unique_lock lock(g_configSharedMutex);
         std::vector<AppId_t> result;
         result.swap(g_pendingAdditions);
         return result;
@@ -1051,32 +1096,34 @@ namespace LuaConfig{
         std::string filePath = OSTPlatform::Encoding::PathToUtf8(path);
         std::string filenameUtf8 = OSTPlatform::Encoding::PathToUtf8(path.filename());
 
-        // Remove old entries from this file before re-parsing (in-memory only, keep disk credentials).
-        UnloadFile(filePath, false);
-        g_currentFile = filePath;
-
         std::ifstream file(path);
         if (!file) {
             LOG_WARN("ParseFile: failed to open {}", filenameUtf8);
-            g_currentFile.clear();
             return;
         }
-        g_fileParseSequence[filePath] = ++g_nextFileParseSequence;
-        
+
         // Capture the file's last-modified time (unix epoch, seconds) so
         // lua_addappid can stamp it onto every appId this file contributes.
         // Portable conversion that does not require C++20 clock_cast.
+        uint32_t mtime = 0;
         {
             std::error_code ec;
             auto ftime = std::filesystem::last_write_time(path, ec);
-            uint32_t mtime = 0;
             if (!ec) {
                 auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
                     ftime - decltype(ftime)::clock::now() + std::chrono::system_clock::now());
                 mtime = static_cast<uint32_t>(std::chrono::system_clock::to_time_t(sctp));
             }
-            g_fileMtime[filePath] = mtime;
         }
+
+        std::unique_lock configLock(g_configSharedMutex);
+        std::lock_guard luaLock(g_luaStateMutex);
+
+        // Remove old entries from this file before re-parsing (in-memory only, keep disk credentials).
+        UnloadFileLocked(filePath, false);
+        g_currentFile = filePath;
+        g_fileParseSequence[filePath] = ++g_nextFileParseSequence;
+        g_fileMtime[filePath] = mtime;
 
         try {
             std::string chunk, line;
@@ -1122,21 +1169,23 @@ namespace LuaConfig{
         }
 
         // Check for manifest code functions after parsing.
-        g_hasManifestCodeFunc = false;
+        bool hasCode = false;
         lua_getglobal(g_lua_state, "fetch_manifest_code");
         if (lua_isfunction(g_lua_state, -1)) {
-            g_hasManifestCodeFunc = true;
+            hasCode = true;
             LOG_INFO("manifest.lua: fetch_manifest_code found");
         }
         lua_pop(g_lua_state, 1);
+        g_hasManifestCodeFunc.store(hasCode, std::memory_order_relaxed);
 
-        g_hasManifestCodeFuncEx = false;
+        bool hasCodeEx = false;
         lua_getglobal(g_lua_state, "fetch_manifest_code_ex");
         if (lua_isfunction(g_lua_state, -1)) {
-            g_hasManifestCodeFuncEx = true;
+            hasCodeEx = true;
             LOG_INFO("manifest.lua: fetch_manifest_code_ex found");
         }
         lua_pop(g_lua_state, 1);
+        g_hasManifestCodeFuncEx.store(hasCodeEx, std::memory_order_relaxed);
 
         g_currentFile.clear();
     }
@@ -1153,6 +1202,7 @@ namespace LuaConfig{
 
         // Initial parse — discard pending additions so NotifyLicenseChanged
         // only sees changes that happen after startup.
+        std::unique_lock lock(g_configSharedMutex);
         g_pendingAdditions.clear();
     }
 
@@ -1174,25 +1224,28 @@ namespace LuaConfig{
             }
         }
 
-        std::unordered_set<std::string> trackedSet;
         std::vector<std::string> trackedFiles;
-        auto rememberTracked = [&](const std::string& filePath) {
-            if (trackedSet.insert(filePath).second) {
-                trackedFiles.push_back(filePath);
-            }
-        };
+        {
+            std::shared_lock lock(g_configSharedMutex);
+            std::unordered_set<std::string> trackedSet;
+            auto rememberTracked = [&](const std::string& filePath) {
+                if (trackedSet.insert(filePath).second) {
+                    trackedFiles.push_back(filePath);
+                }
+            };
 
-        for (const auto& [filePath, _] : g_fileDepots) {
-            rememberTracked(filePath);
-        }
-        for (const auto& [filePath, _] : g_fileManifestOverrides) {
-            rememberTracked(filePath);
-        }
-        for (const auto& [filePath, _] : g_fileCredentials) {
-            rememberTracked(filePath);
-        }
-        for (const auto& [filePath, _] : g_fileParseSequence) {
-            rememberTracked(filePath);
+            for (const auto& [filePath, _] : g_fileDepots) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileManifestOverrides) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileCredentials) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileParseSequence) {
+                rememberTracked(filePath);
+            }
         }
 
         for (const auto& filePath : trackedFiles) {
@@ -1206,6 +1259,7 @@ namespace LuaConfig{
         }
 
         if (clearPendingAdditions) {
+            std::unique_lock lock(g_configSharedMutex);
             g_pendingAdditions.clear();
         }
     }
