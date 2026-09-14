@@ -49,7 +49,8 @@ namespace {
 } // namespace
 
 void Apply(const PipeContext& ctx) {
-    if (Config::injectDlls.empty()) return;
+    const auto injectDlls = Config::GetInjectDlls();
+    if (injectDlls.empty()) return;
     if (!ctx.gameProcess) return;
 
     // Read the command line lazily: only if an injection entry uses it.
@@ -63,7 +64,7 @@ void Apply(const PipeContext& ctx) {
         return cmdLine;
     };
 
-    for (const auto& dll : Config::injectDlls) {
+    for (const auto& dll : injectDlls) {
         const std::optional<std::string>& cmd = dll.whenCmdline.empty() ? cmdLine : commandLine();
         if (!Matches(dll, ctx, cmd)) continue;
         if (!ClaimInjection({ctx.process, dll.path})) continue;

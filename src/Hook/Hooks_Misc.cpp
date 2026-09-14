@@ -53,9 +53,10 @@ namespace {
     // opt-in and gameoverlayrenderer hijacks the XInput stream.
     HOOK_FUNC(OptedInMask, int64,void* pThis, AppId_t appId)
     {
-        if (appId == kOnlineFixAppId && g_OnlineFixRealAppId) {
-            LOG_MISC_INFO("OptedInMask: appid {} -> {}",appId, g_OnlineFixRealAppId);
-            appId = g_OnlineFixRealAppId;
+        const AppId_t realAppId = g_OnlineFixRealAppId.load(std::memory_order_relaxed);
+        if (appId == kOnlineFixAppId && realAppId != 0) {
+            LOG_MISC_INFO("OptedInMask: appid {} -> {}", appId, realAppId);
+            appId = realAppId;
         }
         return oOptedInMask(pThis, appId);
     }
@@ -70,12 +71,13 @@ namespace {
               CGameID* pOverlayCGameID, void* a6, int a7,
               void* a8, void* a9, unsigned int a10, char a11)
     {
-        if (g_OnlineFixRealAppId && pOverlayCGameID
+        const AppId_t realAppId = g_OnlineFixRealAppId.load(std::memory_order_relaxed);
+        if (realAppId != 0 && pOverlayCGameID
             && pOverlayCGameID->AppID(true) == kOnlineFixAppId) 
         {
             LOG_MISC_INFO("BuildSpawnEnvBlock: SetAppID in OverlayCGameID {} -> {}",
-                          pOverlayCGameID->AppID(true), g_OnlineFixRealAppId);
-            pOverlayCGameID->SetAppID(g_OnlineFixRealAppId);
+                          pOverlayCGameID->AppID(true), realAppId);
+            pOverlayCGameID->SetAppID(realAppId);
         }
         return oBuildSpawnEnvBlock(pThis, pCGameID, a3, env,
                                     pOverlayCGameID, a6, a7,
@@ -122,23 +124,25 @@ namespace Hooks_Misc {
 
     
     AppId_t ResolveAppId() {
-        if (g_OnlineFixRealAppId) return g_OnlineFixRealAppId;
+        const AppId_t realAppId = g_OnlineFixRealAppId.load(std::memory_order_relaxed);
+        if (realAppId != 0) return realAppId;
         return GetAppIDForCurrentPipeWrap();
     }
 
     bool IsOnlineFixActive() {
-        return g_OnlineFixRealAppId != 0;
+        return g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0;
     }
 
     void NotifyNetworkingSocketsUsed() {
-        if (g_OnlineFixRealAppId && !g_NetworkingSocketsActive) {
-            g_NetworkingSocketsActive = true;
-            LOG_MISC_INFO("NetworkingSockets active: GetAppID now reports 480 for cert match");
+        if (g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0) {
+            if (!g_NetworkingSocketsActive.exchange(true, std::memory_order_relaxed)) {
+                LOG_MISC_INFO("NetworkingSockets active: GetAppID now reports 480 for cert match");
+            }
         }
     }
 
     bool ShouldReportOnlineFixAppId() {
-        return g_OnlineFixRealAppId != 0 && g_NetworkingSocketsActive;
+        return g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0 && g_NetworkingSocketsActive.load(std::memory_order_relaxed);
     }
     
     bool EnsureBufferCapacity(CUtlBuffer* pWrite, uint32 newCapacity, bool updatePut)

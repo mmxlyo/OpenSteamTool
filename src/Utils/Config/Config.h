@@ -45,6 +45,7 @@ namespace Config {
     std::string GetRemoteUrlTemplate();
     CloudSettings GetCloudSettings();
     bool GetStatsEnableApi();
+    std::vector<InjectDll> GetInjectDlls();
 
     // [manifest] — provider selection lives in ManifestClient (table-driven).
     inline uint32_t manifestTimeoutResolve = 5000;

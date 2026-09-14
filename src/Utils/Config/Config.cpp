@@ -293,4 +293,9 @@ namespace {
         };
     }
 
+    std::vector<InjectDll> GetInjectDlls() {
+        std::lock_guard lock(g_mutex);
+        return injectDlls;
+    }
+
 }

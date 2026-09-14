@@ -39,18 +39,17 @@ ParsedUrl ParseUrl(const char* rawUrl) {
 
     const size_t slash = url.find('/');
     const std::string hostPart = url.substr(0, slash);
-    out.path = (slash != std::string::npos)
-        ? L"/" + std::wstring(url.begin() + slash + 1, url.end())
-        : L"/";
+    const std::string pathPart = (slash != std::string::npos) ? url.substr(slash) : "/";
+    out.path = Encoding::Utf8ToWide(pathPart);
 
     const size_t colon = hostPart.find(':');
     if (colon != std::string::npos) {
-        out.host = std::wstring(hostPart.begin(), hostPart.begin() + colon);
+        out.host = Encoding::Utf8ToWide(hostPart.substr(0, colon));
         const auto port = Numbers::ParseUInt32(hostPart, {colon + 1});
         if (!port || *port == 0 || *port > 65535) return out;
         out.port = static_cast<INTERNET_PORT>(*port);
     } else {
-        out.host = std::wstring(hostPart.begin(), hostPart.end());
+        out.host = Encoding::Utf8ToWide(hostPart);
     }
 
     out.valid = !out.host.empty();
@@ -130,9 +129,9 @@ Result Execute(const wchar_t* method,
     const DWORD totalLen = reqBodyLen;
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
             const_cast<void*>(reqBody), reqBodyLen, totalLen, 0)) {
-        OSTP_LOG_WARN("{} - WinHttpSendRequest failed (error={})", url, GetLastError());
+        OSTP_LOG_WARN("{} - WinHttpSendRequest failed (error={})", url ? url : "", GetLastError());
     } else if (!WinHttpReceiveResponse(hRequest, nullptr)) {
-        OSTP_LOG_WARN("{} - WinHttpReceiveResponse failed (error={})", url, GetLastError());
+        OSTP_LOG_WARN("{} - WinHttpReceiveResponse failed (error={})", url ? url : "", GetLastError());
     } else {
         DWORD sz = sizeof(r.status);
         if (!WinHttpQueryHeaders(
@@ -168,7 +167,7 @@ Result Execute(const wchar_t* method,
 
         if (r.status < 200 || r.status >= 300) {
             OSTP_LOG_WARN("{} - unexpected HTTP {}  body={}",
-                             url,
+                             url ? url : "",
                              r.status,
                              r.body.size() > 512 ? r.body.substr(0, 512) + "..." : r.body);
         } else {

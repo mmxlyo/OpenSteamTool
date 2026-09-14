@@ -170,14 +170,24 @@ std::optional<uint64_t> FindInFileRange(
     };
     // Drain the in-flight read before tearing buffers down: the kernel may still be
     // writing into a buffer, so cancel and wait for the op to settle first.
-    const auto drainPending = [&]() {
-        if (pendingSlot >= 0) {
-            ::CancelIoEx(file.get(), &ov[pendingSlot]);
-            DWORD discarded = 0;
-            ::GetOverlappedResult(file.get(), &ov[pendingSlot], &discarded, TRUE);
-            pendingSlot = -1;
+    struct PendingDrainGuard {
+        HANDLE file = nullptr;
+        OVERLAPPED* ov = nullptr;
+        int* pendingSlot = nullptr;
+
+        void Drain() {
+            if (pendingSlot && *pendingSlot >= 0 && file && ov) {
+                ::CancelIoEx(file, &ov[*pendingSlot]);
+                DWORD discarded = 0;
+                ::GetOverlappedResult(file, &ov[*pendingSlot], &discarded, TRUE);
+                *pendingSlot = -1;
+            }
         }
-    };
+
+        ~PendingDrainGuard() {
+            Drain();
+        }
+    } drainGuard{file.get(), ov, &pendingSlot};
 
     uint64_t bytesReadTotal = 0;
     size_t chunks = 0;
@@ -236,7 +246,7 @@ std::optional<uint64_t> FindInFileRange(
         const auto match = scanner.Find(std::span<const uint8_t>(buffers[slot].get(), got));
         scanMs += scanTimer.ElapsedMs();
         if (match) {
-            drainPending();
+            drainGuard.Drain();
             const uint64_t absoluteMatch = curStart + *match;
             OSTP_LOG_DEBUG("ByteSearch::FindInFileRange matched path={} range=[0x{:X},0x{:X}) match=0x{:X} bytes_read={} chunks={} read_ms={:.3f} bmh_ms={:.3f} total_ms={:.3f}",
                            path.string(),

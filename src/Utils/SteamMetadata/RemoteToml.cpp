@@ -171,7 +171,9 @@ Result Fetch(const Request& request)
                      request.channel, request.component, PathToUtf8(cacheDir), mkdirEc.message());
         }
 
-        fs::path tempPath = cacheDir / (out.sha256 + ".tmp");
+        fs::path tempPath = cacheDir / (out.sha256 + ".tmp." +
+                                        std::to_string(::GetCurrentProcessId()) + "." +
+                                        std::to_string(::GetCurrentThreadId()));
         bool writeOk = false;
         {
             std::ofstream ofs(tempPath, std::ios::binary);

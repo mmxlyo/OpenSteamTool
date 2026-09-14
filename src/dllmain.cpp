@@ -255,10 +255,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     {
         g_HooksInstalled.store(false);
         g_IsDiversionActive.store(false);
-        ConfigFileWatcher::Stop();
-        LuaFileWatcher::Stop();
-        // During process termination (pvReserved != nullptr), avoid loader-lock work in unhooks.
+        // During process termination (pvReserved != nullptr), OS terminates all threads
+        // before calling DllMain; avoid joining dead threads or performing loader-lock unhooks.
         if (pvReserved == nullptr) {
+            ConfigFileWatcher::Stop();
+            LuaFileWatcher::Stop();
             SteamUI::CoreUnhook();
             SteamClient::CoreUnhook();
             CloudRedirectHost::Shutdown();
