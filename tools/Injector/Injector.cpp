@@ -514,7 +514,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         for (int i = 0; i < argc; ++i) {
             int size_needed = WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, NULL, 0, NULL, NULL);
             std::string strTo(size_needed, 0);
-            WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, &strTo[0], size_needed, NULL, NULL);
+            WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, strTo.data(), size_needed, NULL, NULL);
             if (!strTo.empty() && strTo.back() == '\0') strTo.pop_back();
             args.push_back(strTo);
         }
@@ -522,7 +522,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     }
     std::vector<char*> argvPtrs;
     for (auto& s : args) {
-        argvPtrs.push_back(&s[0]);
+        argvPtrs.push_back(s.data());
     }
     argvPtrs.push_back(nullptr);
     return main(argc, argvPtrs.data());

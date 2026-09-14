@@ -134,13 +134,18 @@ std::vector<Change> Watch::Drain() {
     if (!IsOpen() || !impl_->readPending) return changes;
 
     DWORD bytesReturned = 0;
-    if (!GetOverlappedResult(impl_->dir.get(), &impl_->overlapped, &bytesReturned, FALSE) ||
-        bytesReturned == 0) {
+    if (!GetOverlappedResult(impl_->dir.get(), &impl_->overlapped, &bytesReturned, FALSE)) {
+        if (GetLastError() == ERROR_IO_INCOMPLETE) {
+            return changes;
+        }
         impl_->readPending = false;
         return changes;
     }
 
     impl_->readPending = false;
+    if (bytesReturned == 0) {
+        return changes;
+    }
     const FILE_NOTIFY_INFORMATION* info =
         reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(impl_->buffer.data());
 
