@@ -17,6 +17,7 @@
 
 #define HOOK_END()                            \
         _ost_detour_transaction_ok_ = OSTPlatform::Detour::CommitTransaction() && _ost_detour_transaction_ok_; \
+        (void)_ost_detour_transaction_ok_;    \
     } while (0)
 
 #define UNHOOK_BEGIN()                        \
@@ -25,6 +26,7 @@
 
 #define UNHOOK_END()                          \
         _ost_detour_transaction_ok_ = OSTPlatform::Detour::CommitTransaction() && _ost_detour_transaction_ok_; \
+        (void)_ost_detour_transaction_ok_;    \
     } while (0)
 
 // ── hook function definition ────────────────────────────────────

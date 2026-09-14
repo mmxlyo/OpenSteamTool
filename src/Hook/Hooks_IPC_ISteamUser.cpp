@@ -105,6 +105,7 @@ namespace {
         AppId_t appId = Hooks_Misc::ResolveAppId();
         if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
 
+        bool haveFresh = false;
         // Strict Denuvo passes a per-launch nonce (pData) here and rejects a
         // stale/cached ticket (88500012). Try an on-demand mint bound to that
         // exact nonce; cache it for GetEncryptedAppTicket. Any failure falls
@@ -127,12 +128,12 @@ namespace {
                 if (auto fresh = EticketClient::FetchFreshEticket(appId, nonce, existingSteamId)) {
                     std::lock_guard<std::mutex> lock(g_freshEticketMutex);
                     g_freshEticket[appId] = std::move(*fresh);
+                    haveFresh = true;
                 }
             }
         }
 
-        bool haveFresh;
-        {
+        if (!haveFresh) {
             std::lock_guard<std::mutex> lock(g_freshEticketMutex);
             haveFresh = g_freshEticket.find(appId) != g_freshEticket.end();
         }

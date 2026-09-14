@@ -14,13 +14,6 @@
 namespace ProcessInspector {
 namespace {
 
-    std::string Lower(std::string value) {
-        for (char& ch : value) {
-            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        }
-        return value;
-    }
-
     std::string BaseNameFromPath(const std::string& path) {
         const size_t slash = path.find_last_of("\\/");
         if (slash == std::string::npos) return path;
@@ -52,8 +45,11 @@ std::optional<uint64> GetProcessCreationTime(PID_t pid) {
 }
 
 bool IsSteamProcessName(std::string_view name) {
-    std::string normalized = Lower(std::string(name));
-    return std::ranges::find(kSteamProcessNames, normalized) != kSteamProcessNames.end();
+    for (std::string_view steamProc : kSteamProcessNames) {
+        if (name.size() == steamProc.size() && _strnicmp(name.data(), steamProc.data(), name.size()) == 0)
+            return true;
+    }
+    return false;
 }
 
 ProcessEnvironment ReadSteamEnvironment(PID_t pid) {

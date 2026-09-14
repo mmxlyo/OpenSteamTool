@@ -3,6 +3,8 @@
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
 #include "Utils/HookSupport/VehCommon.h"
+
+#include <atomic>
 #include <unordered_set>
 
 namespace {
@@ -12,30 +14,31 @@ namespace {
 
     CAPTURE_THIS_FUNC(GetPackageInfo, PackageInfo*,g_pCPackageInfo,void* pThis, uint32 packageId, uint64 accessToken);
     
-    void* g_pCUser = nullptr;
-    PackageInfo* g_pInjectedPackageInfo = nullptr;
-    bool  g_licenseInitialized = false;
-    bool  g_licenseRefreshPending = false;
+    std::atomic<void*>         g_pCUser{nullptr};
+    std::atomic<PackageInfo*>  g_pInjectedPackageInfo{nullptr};
+    std::atomic<bool>          g_licenseInitialized{false};
+    std::atomic<bool>          g_licenseRefreshPending{false};
 
     constexpr PackageId_t kInjectedPackageId = 0;
     constexpr uint64_t kInjectedPkgAccessToken = 10660652434190618804ull;
 
     bool MarkLicenseAsChangedAndProcessUpdates() {
-        if (!g_pCUser || !oMarkLicenseAsChanged || !oProcessPendingLicenseUpdates) {
+        void* pUser = g_pCUser.load(std::memory_order_relaxed);
+        if (!pUser || !oMarkLicenseAsChanged || !oProcessPendingLicenseUpdates) {
             LOG_PACKAGE_WARN("MarkLicenseAsChangedAndProcessUpdates: dependencies not ready, skipping");
             return false;
         }
-        oMarkLicenseAsChanged(g_pCUser, kInjectedPackageId, true);
-        oProcessPendingLicenseUpdates(g_pCUser);
+        oMarkLicenseAsChanged(pUser, kInjectedPackageId, true);
+        oProcessPendingLicenseUpdates(pUser);
         LOG_PACKAGE_DEBUG("MarkLicenseAsChangedAndProcessUpdates: marked package {} as changed and processed updates", kInjectedPackageId);
         return true;
     }
 
     void TryProcessPendingLicenseRefresh() {
-        if (!g_licenseRefreshPending)
+        if (!g_licenseRefreshPending.load(std::memory_order_relaxed))
             return;
         if (MarkLicenseAsChangedAndProcessUpdates())
-            g_licenseRefreshPending = false;
+            g_licenseRefreshPending.store(false, std::memory_order_relaxed);
     }
 
     bool CUtlMemoryGrowWrap(CUtlVector<AppId_t>* pVec, int grow_size) {
@@ -67,31 +70,32 @@ namespace {
                 pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = appIds[i];
         }
 
-        g_licenseInitialized = true;
-        g_licenseRefreshPending = true;
+        g_licenseInitialized.store(true, std::memory_order_relaxed);
+        g_licenseRefreshPending.store(true, std::memory_order_relaxed);
         TryProcessPendingLicenseRefresh();
         return true;
     }
 
     bool TryInitFakeLicenseOnce() {
-        if (g_licenseInitialized) return true;
-        if(CAPTURE_READY(GetPackageInfo)){
+        if (g_licenseInitialized.load(std::memory_order_relaxed)) return true;
+        if (CAPTURE_READY(GetPackageInfo)) {
             PackageInfo* pPkg = oGetPackageInfo(g_pCPackageInfo, kInjectedPackageId, kInjectedPkgAccessToken);
-            if(!pPkg) {
+            if (!pPkg) {
                 LOG_PACKAGE_WARN("TryInitFakeLicenseOnce: GetPackageInfo returned null for injected package");
                 return false;
             }
-            if(!g_pInjectedPackageInfo) g_pInjectedPackageInfo = pPkg;
+            if (!g_pInjectedPackageInfo.load(std::memory_order_relaxed)) {
+                g_pInjectedPackageInfo.store(pPkg, std::memory_order_release);
+            }
             return InitFakeLicenseOnce(pPkg);
         }
         return false;
     }
 
-
     HOOK_FUNC(CheckAppOwnership, bool, void* pObj, AppId_t appId, AppOwnership* pOwn) {
-        if (!g_pCUser) {
-            g_pCUser = pObj;
-            LOG_PACKAGE_DEBUG("CheckAppOwnership: captured CUser {}", g_pCUser);
+        if (!g_pCUser.load(std::memory_order_relaxed)) {
+            g_pCUser.store(pObj, std::memory_order_relaxed);
+            LOG_PACKAGE_DEBUG("CheckAppOwnership: captured CUser {}", pObj);
         }
 
         bool result = oCheckAppOwnership(pObj, appId, pOwn);
@@ -135,7 +139,7 @@ namespace Hooks_Package {
     }
 
     void NotifyLicenseChanged() {
-        PackageInfo* pPkg = g_pInjectedPackageInfo;
+        PackageInfo* pPkg = g_pInjectedPackageInfo.load(std::memory_order_acquire);
         if (!pPkg) {
             LOG_PACKAGE_WARN("NotifyLicenseChanged: injected PackageInfo not ready, cannot notify");
             return;
@@ -160,7 +164,7 @@ namespace Hooks_Package {
         LOG_PACKAGE_DEBUG("NotifyLicenseChanged: processing {} additions", additions.size());
         if (!additions.empty()) {
             uint32_t oldSize = pPkg->AppIdVec.m_Size;
-            if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, additions.size())) {
+            if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, static_cast<int>(additions.size()))) {
                 // An applied addition invalidates any UI removal that has not
                 // reached the UI thread yet.
                 for (AppId_t id : additions)

@@ -46,15 +46,25 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
         dllPath = steamPath;
     }
     sprintf_s(DllDir, kRuntimePathCapacity, "%s", dllPath.c_str());
+
+    // Evaluate portable mode once after SteamInstallPath and DllDir are set.
+    const auto dllFsPath   = PathFromUtf8(DllDir);
+    const auto steamFsPath = PathFromUtf8(SteamInstallPath);
+    std::error_code ecEquiv;
+    const bool sameDir = std::filesystem::equivalent(dllFsPath, steamFsPath, ecEquiv);
+    g_IsPortableMode = !sameDir && (_wcsicmp(dllFsPath.c_str(), steamFsPath.c_str()) != 0);
+
     sprintf_s(DiversionPath, kRuntimePathCapacity, "%s\\bin\\diversion64.dll", GetStorageDirectory());
 
     // 3. Resolve config and lua directory:
     // Check DllDir first (portable folder), fallback to SteamInstallPath.
-    std::filesystem::path tomlFs = PathFromUtf8(DllDir) / "opensteamtool.toml";
+    std::filesystem::path tomlFs = dllFsPath / "opensteamtool.toml";
     std::string tomlPath = PathToUtf8(tomlFs);
-    if (!std::filesystem::exists(tomlFs)) {
-        std::filesystem::path steamTomlFs = PathFromUtf8(SteamInstallPath) / "opensteamtool.toml";
-        if (std::filesystem::exists(steamTomlFs) || dllPath.empty()) {
+    std::error_code ecToml;
+    if (!std::filesystem::exists(tomlFs, ecToml) || ecToml) {
+        std::filesystem::path steamTomlFs = steamFsPath / "opensteamtool.toml";
+        std::error_code ecSteamToml;
+        if ((std::filesystem::exists(steamTomlFs, ecSteamToml) && !ecSteamToml) || dllPath.empty()) {
             tomlPath = PathToUtf8(steamTomlFs);
         }
     }
@@ -104,7 +114,9 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
         // Retry up to 3 times in case the old Steam process is still releasing the file handle
         constexpr int kMaxCopyRetries = 3;
         DWORD gle = ERROR_SUCCESS;
+        int actualAttempts = 0;
         for (int attempt = 1; attempt <= kMaxCopyRetries; ++attempt) {
+            actualAttempts = attempt;
             if (CopyFileW(wideSteamclientPath.c_str(), wideDiversionPath.c_str(), FALSE)) {
                 copyOk = true;
                 LOG_INFO("Cloned steamclient64.dll -> {}", DiversionPath);
@@ -120,7 +132,7 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
         }
 
         if (!copyOk) {
-            LOG_WARN("CopyFileW to diversion64.dll failed after {} attempts (err={})", kMaxCopyRetries, gle);
+            LOG_WARN("CopyFileW to diversion64.dll failed after {} attempt(s) (err={})", actualAttempts, gle);
         }
     }
 
@@ -189,10 +201,13 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     watchDirs.push_back(std::string(LuaDir));
     // In portable mode, also watch Steam's config/lua if it already exists
     if (IsPortableMode()) {
-        std::string steamLua = OSTPlatform::Encoding::PathToUtf8(
-            OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua");
-        if (std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(steamLua)) && steamLua != std::string(LuaDir)) {
-            watchDirs.push_back(steamLua);
+        const auto steamLuaFs = OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua";
+        std::error_code ecLua;
+        if (std::filesystem::exists(steamLuaFs, ecLua) && !ecLua) {
+            std::string steamLua = OSTPlatform::Encoding::PathToUtf8(steamLuaFs);
+            if (steamLua != std::string(LuaDir)) {
+                watchDirs.push_back(std::move(steamLua));
+            }
         }
     }
 
@@ -240,14 +255,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     {
         g_HooksInstalled.store(false);
         g_IsDiversionActive.store(false);
-        // During process termination (pvReserved != nullptr), avoid loader-lock work in
-        // unhooks; only stop file watchers to ensure clean thread termination.
-        if (pvReserved != nullptr) {
-            ConfigFileWatcher::Stop();
-            LuaFileWatcher::Stop();
-        } else {
-            ConfigFileWatcher::Stop();
-            LuaFileWatcher::Stop();
+        ConfigFileWatcher::Stop();
+        LuaFileWatcher::Stop();
+        // During process termination (pvReserved != nullptr), avoid loader-lock work in unhooks.
+        if (pvReserved == nullptr) {
             SteamUI::CoreUnhook();
             SteamClient::CoreUnhook();
             CloudRedirectHost::Shutdown();

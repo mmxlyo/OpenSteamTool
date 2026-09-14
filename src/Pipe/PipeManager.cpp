@@ -9,6 +9,7 @@
 #include "Hook/Hooks_Misc.h"
 
 #include <chrono>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <unordered_map>
@@ -16,7 +17,7 @@
 namespace PipeManager {
 namespace {
 
-    // OnHandshake runs single-threaded, so this cache needs no lock.
+    std::mutex g_processMutex;
     std::unordered_map<ProcessKey, ProcessInspector::ProcessSnapshot, ProcessKeyHash> g_processes;
 
     // steamclient doesn't always finish binding a brand-new pipe to its appid by
@@ -39,6 +40,7 @@ namespace {
         if (!currentCreationTime) return std::nullopt;
 
         const ProcessKey currentKey{pid, *currentCreationTime};
+        std::scoped_lock lock(g_processMutex);
         const auto it = g_processes.find(currentKey);
         if (it == g_processes.end()) return std::nullopt;
 
@@ -54,7 +56,10 @@ namespace {
         // process yields creationTime=0, so skip caching that junk key.
         const ProcessInspector::ProcessSnapshot snapshot = ProcessInspector::InspectProcess(pid);
         const ProcessKey processKey = MakeProcessKey(snapshot);
-        if (processKey.IsValid()) g_processes[processKey] = snapshot;
+        if (processKey.IsValid()) {
+            std::scoped_lock lock(g_processMutex);
+            g_processes[processKey] = snapshot;
+        }
         return snapshot;
     }
 

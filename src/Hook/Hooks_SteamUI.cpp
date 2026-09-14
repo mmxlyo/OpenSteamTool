@@ -32,28 +32,30 @@ namespace
         return (pos == std::wstring_view::npos) ? path : path.substr(pos + 1);
     }
 
+    static bool EqualsIgnoreCase(std::string_view a, std::string_view b) noexcept {
+        return (a.size() == b.size()) && (_strnicmp(a.data(), b.data(), a.size()) == 0);
+    }
+
+    static bool EqualsIgnoreCaseW(std::wstring_view a, std::wstring_view b) noexcept {
+        return (a.size() == b.size()) && (_wcsnicmp(a.data(), b.data(), a.size()) == 0);
+    }
+
     static bool IsSteamClientPath(const char* path) {
         if (!path) return false;
-        std::string_view fn = ExtractFileName(path);
-        switch (fn.size()) {
-        case 16: return _strnicmp(fn.data(), "steamclient64.dll", 16) == 0;
-        case 14: return _strnicmp(fn.data(), "steamclient.dll", 14) == 0;
-        case 13: return _strnicmp(fn.data(), "steamclient64", 13) == 0;
-        case 11: return _strnicmp(fn.data(), "steamclient", 11) == 0;
-        default: return false;
-        }
+        const std::string_view fn = ExtractFileName(path);
+        return EqualsIgnoreCase(fn, "steamclient64.dll") ||
+               EqualsIgnoreCase(fn, "steamclient.dll")   ||
+               EqualsIgnoreCase(fn, "steamclient64")     ||
+               EqualsIgnoreCase(fn, "steamclient");
     }
 
     static bool IsSteamClientPathW(const wchar_t* path) {
         if (!path) return false;
-        std::wstring_view fn = ExtractFileNameW(path);
-        switch (fn.size()) {
-        case 16: return _wcsnicmp(fn.data(), L"steamclient64.dll", 16) == 0;
-        case 14: return _wcsnicmp(fn.data(), L"steamclient.dll", 14) == 0;
-        case 13: return _wcsnicmp(fn.data(), L"steamclient64", 13) == 0;
-        case 11: return _wcsnicmp(fn.data(), L"steamclient", 11) == 0;
-        default: return false;
-        }
+        const std::wstring_view fn = ExtractFileNameW(path);
+        return EqualsIgnoreCaseW(fn, L"steamclient64.dll") ||
+               EqualsIgnoreCaseW(fn, L"steamclient.dll")   ||
+               EqualsIgnoreCaseW(fn, L"steamclient64")     ||
+               EqualsIgnoreCaseW(fn, L"steamclient");
     }
 
     // Original pointers for system module lookup APIs
@@ -87,6 +89,13 @@ namespace
                 SetLastError(ERROR_INVALID_PARAMETER);
                 return FALSE;
             }
+            constexpr DWORD kKnownFlags = GET_MODULE_HANDLE_EX_FLAG_PIN |
+                                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT |
+                                          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
+            if ((dwFlags & ~kKnownFlags) != 0) {
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
+            }
             if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) &&
                 (dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT))
             {
@@ -94,13 +103,13 @@ namespace
                 return FALSE;
             }
             if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
-                HMODULE dummy = nullptr;
                 if (!oGetModuleHandleExA((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                         reinterpret_cast<LPCSTR>(client_hModule), &dummy))
+                                         reinterpret_cast<LPCSTR>(client_hModule), phModule))
                 {
                     *phModule = nullptr;
                     return FALSE;
                 }
+                return TRUE;
             }
             *phModule = reinterpret_cast<HMODULE>(client_hModule);
             return TRUE;
@@ -117,6 +126,13 @@ namespace
                 SetLastError(ERROR_INVALID_PARAMETER);
                 return FALSE;
             }
+            constexpr DWORD kKnownFlags = GET_MODULE_HANDLE_EX_FLAG_PIN |
+                                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT |
+                                          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
+            if ((dwFlags & ~kKnownFlags) != 0) {
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
+            }
             if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) &&
                 (dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT))
             {
@@ -124,13 +140,13 @@ namespace
                 return FALSE;
             }
             if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
-                HMODULE dummy = nullptr;
                 if (!oGetModuleHandleExW((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                         reinterpret_cast<LPCWSTR>(client_hModule), &dummy))
+                                         reinterpret_cast<LPCWSTR>(client_hModule), phModule))
                 {
                     *phModule = nullptr;
                     return FALSE;
                 }
+                return TRUE;
             }
             *phModule = reinterpret_cast<HMODULE>(client_hModule);
             return TRUE;
@@ -236,6 +252,7 @@ namespace
                 std::lock_guard<std::mutex> lock(g_removalMutex);
                 draining.swap(g_pendingRemovals);
             }
+            std::vector<AppId_t> newlyRemoved;
             for (AppId_t appId : draining)
             {
                 if (LuaConfig::IsOwned(appId))
@@ -247,13 +264,16 @@ namespace
                 {
                     // Only remove from the library if it's not already uninstalled
                     pApp->OwnershipFlags = k_EAppOwnershipFlags_None;
-                    if(pApp->AppStateFlags == k_EAppStateUninstalled){
-                        std::lock_guard<std::mutex> lock(g_removalMutex);
-                        g_removedAppIds.insert(appId);
+                    if (pApp->AppStateFlags == k_EAppStateUninstalled) {
+                        newlyRemoved.push_back(appId);
                     }
                 }
                 
                 oMarkAppChange(g_pAppChangeSource, appId, EAppChangeFlags::AppInfoOrConfig);
+            }
+            if (!newlyRemoved.empty()) {
+                std::lock_guard<std::mutex> lock(g_removalMutex);
+                g_removedAppIds.insert(newlyRemoved.begin(), newlyRemoved.end());
             }
         }
         return oCSteamUIAppControllerRunFrame(pController);
@@ -303,7 +323,9 @@ namespace Hooks_SteamUI
     void QueueRemoval(AppId_t appId)
     {
         std::lock_guard<std::mutex> lock(g_removalMutex);
-        g_pendingRemovals.push_back(appId);
+        if (std::find(g_pendingRemovals.begin(), g_pendingRemovals.end(), appId) == g_pendingRemovals.end()) {
+            g_pendingRemovals.push_back(appId);
+        }
     }
 
     void CancelRemoval(AppId_t appId)

@@ -77,6 +77,16 @@ ModuleHandle Load(const std::filesystem::path& path) {
     return module;
 }
 
+bool Unload(ModuleHandle module) {
+    if (!module) return false;
+    const BOOL ok = FreeLibrary(reinterpret_cast<HMODULE>(module));
+    if (!ok) {
+        OSTP_LOG_WARN("FreeLibrary({:p}) failed (error={})", module, GetLastError());
+        return false;
+    }
+    return true;
+}
+
 ModuleHandle GetLoaded(std::string_view moduleName) {
     const std::wstring wideName = Encoding::Utf8ToWide(moduleName);
     if (wideName.empty() && !moduleName.empty()) {

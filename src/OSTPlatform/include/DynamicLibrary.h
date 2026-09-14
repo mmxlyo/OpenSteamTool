@@ -10,6 +10,7 @@ namespace OSTPlatform::DynamicLibrary {
     using ModuleHandle = void*;
 
     ModuleHandle Load(const std::filesystem::path& path);
+    bool Unload(ModuleHandle module);
     ModuleHandle GetLoaded(std::string_view moduleName);
     void* GetSymbol(ModuleHandle module, const char* symbolName);
     void* GetSymbol(ModuleHandle module, uint16_t ordinal);

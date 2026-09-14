@@ -45,17 +45,10 @@ inline char LuaDir[kRuntimePathCapacity]           = {};
 inline char ConfigPath[kRuntimePathCapacity]       = {};
 inline char DllDir[kRuntimePathCapacity]           = {};
 
+inline bool g_IsPortableMode = false;
+
 inline bool IsPortableMode() {
-    if (DllDir[0] == '\0' || SteamInstallPath[0] == '\0') {
-        return false;
-    }
-    std::error_code ec;
-    if (std::filesystem::equivalent(OSTPlatform::Encoding::PathFromUtf8(DllDir),
-                                    OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath), ec)) {
-        return false;
-    }
-    return _wcsicmp(OSTPlatform::Encoding::Utf8ToWide(DllDir).c_str(),
-                    OSTPlatform::Encoding::Utf8ToWide(SteamInstallPath).c_str()) != 0;
+    return g_IsPortableMode;
 }
 
 inline const char* GetStorageDirectory() {

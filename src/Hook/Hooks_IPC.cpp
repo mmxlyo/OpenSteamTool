@@ -18,6 +18,7 @@ namespace {
 
     //  Handler dispatch table
     struct ResolvedHandler {
+        uint64_t              key;        // (static_cast<uint64_t>(interfaceID) << 32) | funcHash
         EIPCInterface         interfaceID;
         uint32                funcHash;
         std::string           name;       // "IClientUser::GetSteamID" — for logs
@@ -27,7 +28,8 @@ namespace {
         IPCHandlerFn          post;
 
         ResolvedHandler(const IPCHandlerEntry& entry, const IPCLoader::Method& method)
-            : interfaceID(method.interfaceID),
+            : key((static_cast<uint64_t>(method.interfaceID) << 32) | method.funcHash),
+              interfaceID(method.interfaceID),
               funcHash(method.funcHash),
               name(std::string(entry.interfaceName) + "::" + entry.methodName),
               fencepost(method.fencepost),
@@ -42,59 +44,18 @@ namespace {
     };
     std::vector<ResolvedHandler> g_Handlers;
 
-    static ResolvedHandler* FindHandler(EIPCInterface iface, uint32 funcHash) {
-        for (auto& e : g_Handlers) {
-            if (e.interfaceID == iface && e.funcHash == funcHash) return &e;
+    static const ResolvedHandler* FindHandler(EIPCInterface iface, uint32 funcHash) {
+        const uint64_t targetKey = (static_cast<uint64_t>(iface) << 32) | funcHash;
+        for (const auto& e : g_Handlers) {
+            if (e.key == targetKey) return &e;
         }
         return nullptr;
     }
 
-    struct IPCDispatch {
-        CPipeClient*     pipe = nullptr;
-        ResolvedHandler* handler = nullptr;
-
-        bool enabled() const {
-            return pipe && handler;
-        }
-
-        std::string DebugString() const {
-            return std::format("{} {}",pipe ? pipe->DebugString() : "null",
-                                handler ? handler->DebugString() : "null");
-        }
-    };
-
-    static IPCDispatch ResolveDispatch(void* pServer,HSteamPipe hSteamPipe,CUtlBuffer* pRead)
+    static void HandleHandshake(void* pServer, HSteamPipe hSteamPipe, const IPCMessages::IPCRequest& request)
     {
-        IPCDispatch dispatch{};
-        dispatch.pipe = GetPipe(pServer, hSteamPipe);
-        if (!dispatch.pipe) return dispatch;
-
-        // We only care about InterfaceCall messages
-        IPCMessages::IPCRequest request{pRead};
-        if (!request.ok()) return dispatch;
-        if (request.command() != EIPCCommand::InterfaceCall) return dispatch;
-
-        // Ignore calls when appId is not resolved or not in Lua config
-        if (!LuaConfig::HasDepot(Hooks_Misc::ResolveAppId())) return dispatch;
-
-        // Parse out the interface call header to find the handler
-        IPCMessages::IPCInterfaceCall call{request.body()};
-        if (!call.ok()) return dispatch;
-
-        // Lookup handler by interface ID + method hash
-        dispatch.handler = FindHandler(call.interfaceID(), call.funcHash());
-        if (!dispatch.handler) return dispatch;
-
-        LOG_IPC_TRACE("Resolved IPC handler: {}", dispatch.DebugString());
-        return dispatch;
-    }
-
-    static void HandleHandshake(void* pServer, HSteamPipe hSteamPipe,CUtlBuffer* pRead)
-    {
-        IPCMessages::IPCRequest request{pRead};
-        if (!request.ok()|| request.command() != EIPCCommand::Handshake) return;
         IPCMessages::IPCHandshakeReq handshake{request.body()};
-        if(!handshake.ok()) return;
+        if (!handshake.ok()) return;
 
         CPipeClient* pipe = GetPipe(pServer, hSteamPipe);
         if (!pipe) return;
@@ -105,41 +66,57 @@ namespace {
         PipeManager::OnHandshake(pipe);
     }
 
-    // Detect the first SteamNetworkingSockets call (interface 46) so GetAppID can
-    // flip to 480 for P2P games. Skipped once already seen or when not in onlinefix.
-    static void DetectNetworkingSockets(CUtlBuffer* pRead) {
-        if (!Hooks_Misc::IsOnlineFixActive() || Hooks_Misc::ShouldReportOnlineFixAppId()) return;
-        IPCMessages::IPCRequest request{pRead};
-        if (!request.ok() || request.command() != EIPCCommand::InterfaceCall) return;
-        IPCMessages::IPCInterfaceCall call{request.body()};
-        if (!call.ok()) return;
-        if (call.interfaceID() == EIPCInterface::IClientNetworkingSocketsSerialized)
-            Hooks_Misc::NotifyNetworkingSocketsUsed();
-    }
-
-    HOOK_FUNC(IPCProcessMessage, bool,void* pServer, HSteamPipe hSteamPipe,
+    HOOK_FUNC(IPCProcessMessage, bool, void* pServer, HSteamPipe hSteamPipe,
               CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
-        // handle handshake messages
-        HandleHandshake(pServer, hSteamPipe, pRead);
-        DetectNetworkingSockets(pRead);
+        // Parse request header once for this buffer
+        IPCMessages::IPCRequest request{pRead};
+        if (!request.ok())
+            return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
 
-        IPCDispatch dispatch = ResolveDispatch(pServer, hSteamPipe, pRead);
-        // If we didn't find a handler for this message, just pass through to the original function.
-        if(!dispatch.enabled()) return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+        const EIPCCommand cmd = request.command();
 
-        // If we did find a handler, run the pre-handler
-        if (dispatch.handler->pre)
-            dispatch.handler->pre(dispatch.pipe, pRead, pWrite);
+        // 1. Handshake messages
+        if (cmd == EIPCCommand::Handshake) {
+            HandleHandshake(pServer, hSteamPipe, request);
+            return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+        }
 
-        // Then call the original function to let steamclient process the message as normal.
-        bool result = oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+        // 2. InterfaceCall messages
+        if (cmd == EIPCCommand::InterfaceCall) {
+            IPCMessages::IPCInterfaceCall call{request.body()};
+            if (!call.ok())
+                return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
 
-        // Ultimately the post-handler can choose to modify the response.
-        if (result && dispatch.handler->post)
-            dispatch.handler->post(dispatch.pipe, pRead, pWrite);
+            // Detect the first SteamNetworkingSockets call (interface 46) so GetAppID can
+            // flip to 480 for P2P games. Skipped once already seen or when not in onlinefix.
+            if (Hooks_Misc::IsOnlineFixActive() && !Hooks_Misc::ShouldReportOnlineFixAppId()) {
+                if (call.interfaceID() == EIPCInterface::IClientNetworkingSocketsSerialized)
+                    Hooks_Misc::NotifyNetworkingSocketsUsed();
+            }
 
-        return result;
+            // Lookup handler by interface ID + method hash.
+            // If matched and app is configured in Lua, resolve pipe and invoke handlers.
+            if (const auto* handler = FindHandler(call.interfaceID(), call.funcHash())) {
+                if (LuaConfig::HasDepot(Hooks_Misc::ResolveAppId())) {
+                    if (CPipeClient* pipe = GetPipe(pServer, hSteamPipe)) {
+                        LOG_IPC_TRACE("Resolved IPC handler: {} {}", pipe->DebugString(), handler->DebugString());
+                        if (handler->pre)
+                            handler->pre(pipe, pRead, pWrite);
+
+                        bool result = oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
+
+                        if (result && handler->post)
+                            handler->post(pipe, pRead, pWrite);
+
+                        return result;
+                    }
+                }
+            }
+        }
+
+        // All other IPC messages pass through to the original function.
+        return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
     }
 
 } // namespace

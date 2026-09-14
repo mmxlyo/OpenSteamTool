@@ -2,6 +2,7 @@
 #include "dllmain.h"
 
 #include "OSTPlatform/include/DynamicLibrary.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "Utils/Config/Config.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Logging/Log.h"
@@ -64,25 +65,26 @@ namespace {
 
     std::filesystem::path ResolveLibraryPath(const std::string& steamRoot,
                                              const std::string& configured) {
+        using OSTPlatform::Encoding::PathFromUtf8;
         std::error_code ec;
-        const std::string filename = configured.empty() ? "cloud_redirect.dll" : configured;
-        std::filesystem::path lib(filename);
-        if (lib.is_absolute()) {
-            return lib;
+        const std::filesystem::path filename = PathFromUtf8(configured.empty() ? "cloud_redirect.dll" : configured);
+        if (filename.is_absolute()) {
+            return filename;
         }
 
         if (DllDir[0] != '\0') {
-            auto p = std::filesystem::path(DllDir) / filename;
+            auto p = PathFromUtf8(DllDir) / filename;
             if (std::filesystem::exists(p, ec) && !ec) return p;
         }
         if (ConfigPath[0] != '\0') {
-            auto configParent = std::filesystem::path(ConfigPath).parent_path();
-            if (configParent != std::filesystem::path(steamRoot)) {
+            auto configParent = PathFromUtf8(ConfigPath).parent_path();
+            auto steamRootPath = PathFromUtf8(steamRoot);
+            if (configParent != steamRootPath) {
                 auto p = configParent / filename;
                 if (std::filesystem::exists(p, ec) && !ec) return p;
             }
         }
-        return std::filesystem::path(steamRoot) / filename;
+        return PathFromUtf8(steamRoot) / filename;
     }
 
     template <typename T>
@@ -134,6 +136,7 @@ void Initialize(const char* steamInstallPath) {
     ok &= ResolveSymbol(g_module, "CR_Shutdown",       g_shutdownFn);
     if (!ok) {
         LOG_WARN("CloudRedirect: cloud_redirect.dll is missing required exports, disabling");
+        OSTPlatform::DynamicLibrary::Unload(g_module);
         g_module = nullptr;
         return;
     }
@@ -148,6 +151,7 @@ void Initialize(const char* steamInstallPath) {
 
     if (!g_initCloudSave(steamInstallPath, &CloudNotify)) {
         LOG_WARN("CloudRedirect: CR_InitCloudSave failed, disabling cloud save redirection");
+        OSTPlatform::DynamicLibrary::Unload(g_module);
         g_module = nullptr;
         return;
     }
@@ -162,11 +166,10 @@ void Initialize(const char* steamInstallPath) {
     }
 
     // Push the current unlocked-app set without re-locking g_mutex.
-    std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
-    std::vector<uint32_t> appIds(depots.begin(), depots.end());
-    g_setApps(appIds.empty() ? nullptr : appIds.data(),
-              static_cast<uint32_t>(appIds.size()));
-    LOG_INFO("CloudRedirect: registered {} redirected app(s)", appIds.size());
+    const std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
+    g_setApps(depots.empty() ? nullptr : depots.data(),
+              static_cast<uint32_t>(depots.size()));
+    LOG_INFO("CloudRedirect: registered {} redirected app(s)", depots.size());
 
     // Vtable hooks let CR handle Cloud RPCs synchronously (slot4 semantics).
     if (g_installVtableHooks) {
@@ -180,11 +183,10 @@ void Initialize(const char* steamInstallPath) {
 void SyncAppSet() {
     if (!g_active.load(std::memory_order_acquire) || !g_setApps) return;
 
-    std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
-    std::vector<uint32_t> appIds(depots.begin(), depots.end());
-    g_setApps(appIds.empty() ? nullptr : appIds.data(),
-              static_cast<uint32_t>(appIds.size()));
-    LOG_DEBUG("CloudRedirect: re-synced redirected app set ({} app(s))", appIds.size());
+    const std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
+    g_setApps(depots.empty() ? nullptr : depots.data(),
+              static_cast<uint32_t>(depots.size()));
+    LOG_DEBUG("CloudRedirect: re-synced redirected app set ({} app(s))", depots.size());
 }
 
 bool IsActive() {
@@ -229,6 +231,21 @@ void Shutdown() {
     std::lock_guard lock(g_mutex);
     if (!g_active.exchange(false)) return;
     if (g_shutdownFn) g_shutdownFn();
+    if (g_module) {
+        OSTPlatform::DynamicLibrary::Unload(g_module);
+        g_module = nullptr;
+    }
+    g_initCloudSave      = nullptr;
+    g_handleCloudRpc     = nullptr;
+    g_setApps            = nullptr;
+    g_isApp              = nullptr;
+    g_shutdownFn         = nullptr;
+    g_enableStatsSync    = nullptr;
+    g_setAccountId       = nullptr;
+    g_notifyAppRunning   = nullptr;
+    g_notifyStatsStored  = nullptr;
+    g_getAchievements    = nullptr;
+    g_installVtableHooks = nullptr;
     LOG_INFO("CloudRedirect: shut down");
 }
 

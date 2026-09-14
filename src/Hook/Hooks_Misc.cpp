@@ -3,6 +3,10 @@
 #include "Utils/HookSupport/VehCommon.h"
 #include "dllmain.h"
 
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+
 namespace {
     // ── Resolve-only functions ─────────────────────────────────────
     RESOLVE_FUNC(CUtlBufferEnsureCapacity, void*, CUtlBuffer* pCUtlBuffer, uint32 newCapacity);
@@ -14,9 +18,10 @@ namespace {
 
     // Assumes one game at a time.  Set by SpawnProcess VEH when -onlinefix
     // is detected; cleared when a non-onlinefix game launches.
-    AppId_t   g_OnlineFixRealAppId;
+    std::atomic<AppId_t> g_OnlineFixRealAppId{0};
     // True once the game starts SteamNetworkingSockets P2P (see GetAppID handler).
-    bool      g_NetworkingSocketsActive;
+    std::atomic<bool>    g_NetworkingSocketsActive{false};
+    std::mutex           g_GameNameMutex;
     std::unordered_map<AppId_t, std::string> g_GameNameCache;
 
 
@@ -159,13 +164,14 @@ namespace Hooks_Misc {
         return g_OnlineFixRealAppId != 0 && g_NetworkingSocketsActive;
     }
     
-    bool EnsureBufferCapacity(CUtlBuffer* pWrite, uint32 newCapacity,bool updatePut)
+    bool EnsureBufferCapacity(CUtlBuffer* pWrite, uint32 newCapacity, bool updatePut)
     {
+        if (!pWrite) return false;
         if (oCUtlBufferEnsureCapacity) {
             LOG_MISC_DEBUG("Before ensuring CUtlBuffer capacity: {}", pWrite->DebugString());
             oCUtlBufferEnsureCapacity(pWrite, newCapacity);
             LOG_MISC_DEBUG("After ensuring CUtlBuffer capacity: {}", pWrite->DebugString());
-            if(updatePut) pWrite->m_Put = newCapacity;
+            if (updatePut) pWrite->m_Put = newCapacity;
             return true;
         }
         LOG_MISC_WARN("EnsureBufferCapacity: oCUtlBufferEnsureCapacity not resolved");
@@ -175,8 +181,11 @@ namespace Hooks_Misc {
     // ── Game name ────────────────────────────────────────────────
     std::string GetGameNameByAppID(AppId_t appId)
     {
-        auto it = g_GameNameCache.find(appId);
-        if (it != g_GameNameCache.end()) return it->second;
+        {
+            std::scoped_lock lock(g_GameNameMutex);
+            auto it = g_GameNameCache.find(appId);
+            if (it != g_GameNameCache.end()) return it->second;
+        }
 
         std::string name;
 
@@ -193,7 +202,12 @@ namespace Hooks_Misc {
         }
 
         LOG_MISC_DEBUG("GetGameNameByAppID({}): {}", appId, name);
-        g_GameNameCache[appId] = name;
+
+        // Only cache valid non-empty names so uninitialized/early calls don't poison the cache
+        if (!name.empty()) {
+            std::scoped_lock lock(g_GameNameMutex);
+            g_GameNameCache.emplace(appId, name);
+        }
         return name;
     }
 
