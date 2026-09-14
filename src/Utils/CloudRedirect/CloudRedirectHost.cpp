@@ -64,30 +64,25 @@ namespace {
 
     std::filesystem::path ResolveLibraryPath(const std::string& steamRoot,
                                              const std::string& configured) {
-        if (configured.empty()) {
-            if (DllDir[0] != '\0') {
-                auto p = std::filesystem::path(DllDir) / "cloud_redirect.dll";
-                if (std::filesystem::exists(p)) return p;
-            }
-            if (ConfigPath[0] != '\0') {
-                auto p = std::filesystem::path(ConfigPath).parent_path() / "cloud_redirect.dll";
-                if (std::filesystem::exists(p)) return p;
-            }
-            return std::filesystem::path(steamRoot) / "cloud_redirect.dll";
+        std::error_code ec;
+        const std::string filename = configured.empty() ? "cloud_redirect.dll" : configured;
+        std::filesystem::path lib(filename);
+        if (lib.is_absolute()) {
+            return lib;
         }
 
-        std::filesystem::path lib(configured);
-        if (lib.is_absolute())
-            return lib;
         if (DllDir[0] != '\0') {
-            auto p = std::filesystem::path(DllDir) / lib;
-            if (std::filesystem::exists(p)) return p;
+            auto p = std::filesystem::path(DllDir) / filename;
+            if (std::filesystem::exists(p, ec) && !ec) return p;
         }
         if (ConfigPath[0] != '\0') {
-            auto p = std::filesystem::path(ConfigPath).parent_path() / lib;
-            if (std::filesystem::exists(p)) return p;
+            auto configParent = std::filesystem::path(ConfigPath).parent_path();
+            if (configParent != std::filesystem::path(steamRoot)) {
+                auto p = configParent / filename;
+                if (std::filesystem::exists(p, ec) && !ec) return p;
+            }
         }
-        return std::filesystem::path(steamRoot) / lib;
+        return std::filesystem::path(steamRoot) / filename;
     }
 
     template <typename T>
@@ -118,7 +113,8 @@ void Initialize(const char* steamInstallPath) {
     if (g_active.load(std::memory_order_acquire)) return;
 
     const std::filesystem::path libPath = ResolveLibraryPath(steamInstallPath, cloud.library);
-    if (!std::filesystem::exists(libPath)) {
+    std::error_code libEc;
+    if (!std::filesystem::exists(libPath, libEc) || libEc) {
         LOG_WARN("CloudRedirect: cloud_redirect.dll not found at {}", libPath.string());
         return;
     }

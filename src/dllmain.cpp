@@ -103,7 +103,7 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
 
         // Retry up to 3 times in case the old Steam process is still releasing the file handle
         constexpr int kMaxCopyRetries = 3;
-        [[maybe_unused]] DWORD gle = ERROR_SUCCESS;
+        DWORD gle = ERROR_SUCCESS;
         for (int attempt = 1; attempt <= kMaxCopyRetries; ++attempt) {
             if (CopyFileW(wideSteamclientPath.c_str(), wideDiversionPath.c_str(), FALSE)) {
                 copyOk = true;
@@ -111,7 +111,10 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
                 break;
             }
             gle = GetLastError();
-            if (attempt < kMaxCopyRetries && (gle == ERROR_SHARING_VIOLATION || gle == ERROR_ACCESS_DENIED)) {
+            if (gle != ERROR_SHARING_VIOLATION && gle != ERROR_ACCESS_DENIED) {
+                break;
+            }
+            if (attempt < kMaxCopyRetries) {
                 Sleep(50);
             }
         }

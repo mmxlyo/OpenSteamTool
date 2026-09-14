@@ -19,63 +19,41 @@
 namespace
 {
     using namespace std::chrono_literals;
-    constexpr int  kMaxRetry      = 50;
-    constexpr auto kRetryInterval = 100ms;
+    constexpr int  kMaxRetry      = 500;
+    constexpr auto kRetryInterval = 10ms;
+
+    static std::string_view ExtractFileName(std::string_view path) {
+        const size_t pos = path.find_last_of("\\/");
+        return (pos == std::string_view::npos) ? path : path.substr(pos + 1);
+    }
+
+    static std::wstring_view ExtractFileNameW(std::wstring_view path) {
+        const size_t pos = path.find_last_of(L"\\/");
+        return (pos == std::wstring_view::npos) ? path : path.substr(pos + 1);
+    }
 
     static bool IsSteamClientPath(const char* path) {
         if (!path) return false;
-        std::string_view p(path);
-        auto endsWithCi = [](std::string_view str, std::string_view suffix) {
-            if (str.size() < suffix.size()) return false;
-            return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin(),
-                [](char a, char b) {
-                    return std::tolower(static_cast<unsigned char>(a)) ==
-                           std::tolower(static_cast<unsigned char>(b));
-                });
-        };
-        auto equalsCi = [](std::string_view a, std::string_view b) {
-            if (a.size() != b.size()) return false;
-            return std::equal(a.begin(), a.end(), b.begin(),
-                [](char c1, char c2) {
-                    return std::tolower(static_cast<unsigned char>(c1)) ==
-                           std::tolower(static_cast<unsigned char>(c2));
-                });
-        };
-        return equalsCi(p, "steamclient64.dll") ||
-               equalsCi(p, "steamclient.dll") ||
-               equalsCi(p, "steamclient64") ||
-               equalsCi(p, "steamclient") ||
-               endsWithCi(p, "\\steamclient64.dll") ||
-               endsWithCi(p, "\\steamclient.dll") ||
-               endsWithCi(p, "/steamclient64.dll") ||
-               endsWithCi(p, "/steamclient.dll");
+        std::string_view fn = ExtractFileName(path);
+        switch (fn.size()) {
+        case 16: return _strnicmp(fn.data(), "steamclient64.dll", 16) == 0;
+        case 14: return _strnicmp(fn.data(), "steamclient.dll", 14) == 0;
+        case 13: return _strnicmp(fn.data(), "steamclient64", 13) == 0;
+        case 11: return _strnicmp(fn.data(), "steamclient", 11) == 0;
+        default: return false;
+        }
     }
 
     static bool IsSteamClientPathW(const wchar_t* path) {
         if (!path) return false;
-        std::wstring_view p(path);
-        auto endsWithCiW = [](std::wstring_view str, std::wstring_view suffix) {
-            if (str.size() < suffix.size()) return false;
-            return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin(),
-                [](wchar_t a, wchar_t b) {
-                    return std::towlower(a) == std::towlower(b);
-                });
-        };
-        auto equalsCiW = [](std::wstring_view a, std::wstring_view b) {
-            if (a.size() != b.size()) return false;
-            return std::equal(a.begin(), a.end(), b.begin(),
-                [](wchar_t c1, wchar_t c2) {
-                    return std::towlower(c1) == std::towlower(c2);
-                });
-        };
-        return equalsCiW(p, L"steamclient64.dll") ||
-               equalsCiW(p, L"steamclient.dll") ||
-               equalsCiW(p, L"steamclient64") ||
-               equalsCiW(p, L"steamclient") ||
-               endsWithCiW(p, L"\\steamclient64.dll") ||
-               endsWithCiW(p, L"\\steamclient.dll") ||
-               endsWithCiW(p, L"/steamclient64.dll") ||
-               endsWithCiW(p, L"/steamclient.dll");
+        std::wstring_view fn = ExtractFileNameW(path);
+        switch (fn.size()) {
+        case 16: return _wcsnicmp(fn.data(), L"steamclient64.dll", 16) == 0;
+        case 14: return _wcsnicmp(fn.data(), L"steamclient.dll", 14) == 0;
+        case 13: return _wcsnicmp(fn.data(), L"steamclient64", 13) == 0;
+        case 11: return _wcsnicmp(fn.data(), L"steamclient", 11) == 0;
+        default: return false;
+        }
     }
 
     // Original pointers for system module lookup APIs
@@ -105,16 +83,27 @@ namespace
         if (client_hModule && !(dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) &&
             IsSteamClientPath(lpModuleName))
         {
-            if (phModule) {
-                *phModule = reinterpret_cast<HMODULE>(client_hModule);
-                if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
-                    HMODULE dummy = nullptr;
-                    oGetModuleHandleExA((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                        reinterpret_cast<LPCSTR>(client_hModule), &dummy);
-                }
-                return TRUE;
+            if (!phModule) {
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
             }
-            return FALSE;
+            if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) &&
+                (dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT))
+            {
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
+            }
+            if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
+                HMODULE dummy = nullptr;
+                if (!oGetModuleHandleExA((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                         reinterpret_cast<LPCSTR>(client_hModule), &dummy))
+                {
+                    *phModule = nullptr;
+                    return FALSE;
+                }
+            }
+            *phModule = reinterpret_cast<HMODULE>(client_hModule);
+            return TRUE;
         }
         return oGetModuleHandleExA(dwFlags, lpModuleName, phModule);
     }
@@ -124,16 +113,27 @@ namespace
         if (client_hModule && !(dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) &&
             IsSteamClientPathW(lpModuleName))
         {
-            if (phModule) {
-                *phModule = reinterpret_cast<HMODULE>(client_hModule);
-                if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
-                    HMODULE dummy = nullptr;
-                    oGetModuleHandleExW((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                        reinterpret_cast<LPCWSTR>(client_hModule), &dummy);
-                }
-                return TRUE;
+            if (!phModule) {
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
             }
-            return FALSE;
+            if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) &&
+                (dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT))
+            {
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
+            }
+            if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
+                HMODULE dummy = nullptr;
+                if (!oGetModuleHandleExW((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                         reinterpret_cast<LPCWSTR>(client_hModule), &dummy))
+                {
+                    *phModule = nullptr;
+                    return FALSE;
+                }
+            }
+            *phModule = reinterpret_cast<HMODULE>(client_hModule);
+            return TRUE;
         }
         return oGetModuleHandleExW(dwFlags, lpModuleName, phModule);
     }
@@ -147,20 +147,35 @@ namespace
         const bool isSteamClient = IsSteamClientPath(path);
 
         if (isSteamClient) {
-            // Wait for all hooks on client_hModule to be fully initialized
+            bool logged = false;
             for (int i = 0; i < kMaxRetry && !g_HooksInstalled.load(); ++i) {
-                LOG_STEAMUI_DEBUG("LoadModuleWithPath: waiting for hooks to be installed... (attempt {}/{})",
-                                  i + 1, kMaxRetry);
+                if (!logged) {
+                    LOG_STEAMUI_DEBUG("LoadModuleWithPath: waiting for hooks to be installed...");
+                    logged = true;
+                }
                 std::this_thread::sleep_for(kRetryInterval);
             }
         }
 
         void* h = oLoadModuleWithPath(path, flags);
 
-        if (isSteamClient && client_hModule) {
-            LOG_STEAMUI_INFO("LoadModuleWithPath: diverted {} (original {}) -> diversion {}",
-                             path ? path : "steamclient64.dll", h, static_cast<void*>(client_hModule));
-            return client_hModule;
+        if (isSteamClient) {
+            if (!g_HooksInstalled.load()) {
+                LOG_STEAMUI_WARN("LoadModuleWithPath: hooks initialization timed out after {} ms, aborting diversion",
+                                 kMaxRetry * static_cast<int>(kRetryInterval.count()));
+                return h;
+            }
+
+            if (client_hModule) {
+                if (g_IsDiversionActive.load()) {
+                    LOG_STEAMUI_INFO("LoadModuleWithPath: diverted {} (original {}) -> diversion {}",
+                                     path ? path : "steamclient64.dll", h, static_cast<void*>(client_hModule));
+                } else {
+                    LOG_STEAMUI_INFO("LoadModuleWithPath: returned fallback steamclient64.dll ({})",
+                                     static_cast<void*>(client_hModule));
+                }
+                return client_hModule;
+            }
         }
 
         return h;
@@ -261,10 +276,10 @@ namespace Hooks_SteamUI
         INSTALL_HOOK_U(CSteamUIAppControllerRunFrame);
 
         // System module handle redirection for Diversion shadow memory isolation
-        OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA));
-        OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW));
-        OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExA), reinterpret_cast<void*>(hkGetModuleHandleExA));
-        OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExW), reinterpret_cast<void*>(hkGetModuleHandleExW));
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExA), reinterpret_cast<void*>(hkGetModuleHandleExA))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExW), reinterpret_cast<void*>(hkGetModuleHandleExW))) _ost_detour_transaction_ok_ = false;
 
         HOOK_END();
     }
@@ -272,10 +287,10 @@ namespace Hooks_SteamUI
     void Uninstall()
     {
         UNHOOK_BEGIN();
-        OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA));
-        OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW));
-        OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleExA), reinterpret_cast<void*>(hkGetModuleHandleExA));
-        OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleExW), reinterpret_cast<void*>(hkGetModuleHandleExW));
+        if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleW), reinterpret_cast<void*>(hkGetModuleHandleW))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleExA), reinterpret_cast<void*>(hkGetModuleHandleExA))) _ost_detour_transaction_ok_ = false;
+        if (!OSTPlatform::Detour::Detach(reinterpret_cast<void**>(&oGetModuleHandleExW), reinterpret_cast<void*>(hkGetModuleHandleExW))) _ost_detour_transaction_ok_ = false;
 
         UNINSTALL_HOOK(LoadModuleWithPath);
         UNINSTALL_HOOK(FillInAppOverview);

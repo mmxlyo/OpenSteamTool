@@ -11,6 +11,7 @@
 #include <fstream>
 #include <string_view>
 #include <vector>
+#include <windows.h>
 
 namespace RemoteToml {
 
@@ -101,13 +102,6 @@ Result Fetch(const Request& request)
     fs::path cacheDir  = baseDir / "opensteamtool" / request.channel / request.component;
     fs::path cachePath = cacheDir / (out.sha256 + ".toml");
 
-    std::error_code mkdirEc;
-    fs::create_directories(cacheDir, mkdirEc);
-    if (mkdirEc) {
-        LOG_WARN("RemoteToml({}/{}): could not create cache dir {} ({})",
-                 request.channel, request.component, PathToUtf8(cacheDir), mkdirEc.message());
-    }
-
     // Check local cache first (pattern & IPC files are immutable per DLL SHA-256).
     fs::path localPath = cachePath;
     std::error_code ec;
@@ -167,17 +161,39 @@ Result Fetch(const Request& request)
         }
     }
 
-    // 4. Remote OK → write cache, return body.
+    // 4. Remote OK → write cache atomically, return body.
     if (http.ok && http.status == 200 && !http.body.empty()) {
-        std::ofstream ofs(cachePath, std::ios::binary);
+        std::error_code mkdirEc;
+        fs::create_directories(cacheDir, mkdirEc);
+        if (mkdirEc) {
+            LOG_WARN("RemoteToml({}/{}): could not create cache dir {} ({})",
+                     request.channel, request.component, PathToUtf8(cacheDir), mkdirEc.message());
+        }
+
+        fs::path tempPath = cacheDir / (out.sha256 + ".tmp");
+        std::ofstream ofs(tempPath, std::ios::binary);
         if (ofs) {
             ofs.write(http.body.data(),
                       static_cast<std::streamsize>(http.body.size()));
-            LOG_INFO("RemoteToml({}/{}): cached to {}",
-                     request.channel, request.component, PathToUtf8(cachePath));
+            ofs.close();
+
+            if (MoveFileExW(tempPath.c_str(), cachePath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                LOG_INFO("RemoteToml({}/{}): cached to {}",
+                         request.channel, request.component, PathToUtf8(cachePath));
+            } else {
+                std::error_code renameEc;
+                fs::rename(tempPath, cachePath, renameEc);
+                if (!renameEc) {
+                    LOG_INFO("RemoteToml({}/{}): cached to {}",
+                             request.channel, request.component, PathToUtf8(cachePath));
+                } else {
+                    LOG_WARN("RemoteToml({}/{}): atomic cache rename failed: {}",
+                             request.channel, request.component, renameEc.message());
+                }
+            }
         } else {
             LOG_WARN("RemoteToml({}/{}): could not open {} for writing",
-                     request.channel, request.component, PathToUtf8(cachePath));
+                     request.channel, request.component, PathToUtf8(tempPath));
         }
         out.body = std::move(http.body);
         out.ok = true;
