@@ -107,33 +107,33 @@ namespace {
         bool result = oCheckAppOwnership(pObj, appId, pOwn);
         TryInitFakeLicenseOnce();
 
-        if (LuaConfig::HasDepot(appId,false)) {
-            if (result && pOwn->ExistInPackageNums > 1) {
+        if (LuaConfig::HasDepot(appId, false)) {
+            bool isTrulyOwned = result && (pOwn->ExistInPackageNums > 1) && !pOwn->bFamilyShared && !pOwn->bBorrowed;
+            if (isTrulyOwned) {
                 // Actually owned — record so HasDepot excludes it going forward
                 LuaConfig::MarkOwned(appId);
                 pOwn->ReleaseState = EAppReleaseState::Released;
             } else {
-                pOwn->PackageId    = kInjectedPackageId;
-                pOwn->ReleaseState = EAppReleaseState::Released;
-                pOwn->bOwnsLicense = true; //This forces DLCs on steam family shared games that u dont own when adding their appid via .lua
-                // Setting this free flag to false will hide it from the library UI.
-                pOwn->bFreeLicense = false;
+                pOwn->PackageId       = kInjectedPackageId;
+                pOwn->ReleaseState    = EAppReleaseState::Released;
+                pOwn->bOwnsLicense    = true; // This forces DLCs and enables decoupled family shared games
+                pOwn->bFreeLicense    = false;
+                pOwn->bFamilyShared   = false;
+                pOwn->bBorrowed       = false;
+                pOwn->bLicenseLocked  = false;
+                pOwn->SteamId32       = 0;
                 return true;
             }
         }
 
-        if (result && pOwn) {
-            const auto familyConfig = Config::GetFamilySharingSettings();
-            if (pOwn->bFamilyShared || pOwn->bBorrowed) {
-                if (familyConfig.disableFamilyLock && pOwn->bLicenseLocked) {
-                    LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bLicenseLocked for shared AppId={}", appId);
-                    pOwn->bLicenseLocked = false;
-                }
-                if (familyConfig.bypassGameLimits && pOwn->bBorrowed) {
-                    LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bBorrowed for shared AppId={}", appId);
-                    pOwn->bBorrowed = false;
-                }
+        if (pOwn && (pOwn->bFamilyShared || pOwn->bBorrowed)) {
+            if (pOwn->bLicenseLocked) {
+                LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bLicenseLocked for shared AppId={}", appId);
+                pOwn->bLicenseLocked = false;
             }
+            pOwn->bBorrowed = false;
+            pOwn->bOwnsLicense = true;
+            result = true;
         }
 
         return result;

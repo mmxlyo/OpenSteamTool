@@ -103,15 +103,3 @@ enabled = false
 #
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 # url_template = "https://fast.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/{component}/{sha256}.toml"
-
-[family_sharing]
-# Enable Steam Family Sharing concurrency protection and anti-lock bypass.
-# When true, masks outbound owner_id in CMsgClientGamesPlayed and silences
-# incoming library lock/stop-playing notifications so playing shared games does
-# not lock out the original lender or trigger 5-minute kick timers.
-disable_family_lock = true
-
-# Bypass in-game restrictions for shared games (e.g. matchmaking/ranked mode)
-# by stripping the borrowed license flag in ownership checks.
-bypass_game_limits = true
-
