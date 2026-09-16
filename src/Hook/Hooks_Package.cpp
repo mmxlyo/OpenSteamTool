@@ -2,7 +2,6 @@
 #include "HookMacros.h"
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
-#include "Utils/Config/Config.h"
 #include "Utils/HookSupport/VehCommon.h"
 
 #include <atomic>
@@ -74,6 +73,7 @@ namespace {
             }
             for (uint32 i = 0; i < numToAdd; i++)
                 pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = appIds[i];
+            pPkg->AppIdVec.m_Size = oldSize + numToAdd;
         }
 
         g_licenseInitialized.store(true, std::memory_order_release);
@@ -199,6 +199,7 @@ namespace Hooks_Package {
                         addedIds.insert(additions[i]);
                         LOG_PACKAGE_DEBUG("NotifyLicenseChanged: inserted AppId {} at [{}]", additions[i], oldSize + i);
                     }
+                    pPkg->AppIdVec.m_Size = oldSize + static_cast<uint32_t>(additions.size());
                 } else {
                     LOG_PACKAGE_WARN("NotifyLicenseChanged: failed to grow AppId vector for additions");
                 }

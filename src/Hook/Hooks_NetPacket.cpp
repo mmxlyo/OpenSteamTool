@@ -6,7 +6,6 @@
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Tickets/EticketClient.h"
 #include "Utils/Support/FnvHash.h"
-#include "Utils/Config/Config.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include <chrono>
 #include <cstdio>
@@ -504,14 +503,15 @@ namespace Hooks_NetPacket_FamilySharing {
     {
         CFamilyGroupsClient_NotifyRunningApps_Notification notify;
         if (notify.ParseFromArray(pBody, cbBody)) {
+            const int runningCount = notify.running_apps_size();
             notify.clear_running_apps();
 
             const auto encSize = notify.ByteSizeLong();
-            if (encSize <= sizeof(g_NewBody) && notify.SerializeToArray(g_NewBody, sizeof(g_NewBody))) {
+            if (encSize <= sizeof(g_NewBody) && notify.SerializeToArray(g_NewBody, static_cast<int>(sizeof(g_NewBody)))) {
                 g_cbNewBody = static_cast<uint32>(encSize);
                 g_NeedReplaceBody = true;
-                LOG_NETPACKET_DEBUG("FamilySharing: Sanitized NotifyRunningApps (preserved family_groupid {}, cleared running_apps)",
-                                   notify.family_groupid());
+                LOG_NETPACKET_INFO("FamilySharing: Sanitized NotifyRunningApps (family_groupid {}, cleared {} running apps)",
+                                   notify.family_groupid(), runningCount);
                 return;
             }
         }
@@ -1298,12 +1298,11 @@ namespace {
         g_NeedReplaceBody = false;
         g_NeedReplaceHdr  = false;
 
-        if (std::string_view(targetJobName).find("NotifyRunningApps") != std::string_view::npos) {
+        switch (Fnv1aHash(targetJobName)) {
+
+        case HASH_JOB_NotifyRunningApps:
             Hooks_NetPacket_FamilySharing::HandleRecv_NotifyRunningApps(pBody, cbBody);
             return;
-        }
-
-        switch (Fnv1aHash(targetJobName)) {
 
         case HASH_JOB_GetUserStats:
             Hooks_NetPacket_UserStats::HandleRecv_GetUserStatsResponse(pHdr, cbHdr, pBody, cbBody);
@@ -1313,7 +1312,12 @@ namespace {
             Hooks_NetPacket_Manifest::HandleRecv(pBody, cbBody, pHdr, cbHdr);
             return;
 
-        // ---- add new 147 service methods here ----
+        default:
+            if (std::string_view(targetJobName).find("NotifyRunningApps") != std::string_view::npos) {
+                Hooks_NetPacket_FamilySharing::HandleRecv_NotifyRunningApps(pBody, cbBody);
+                return;
+            }
+            break;
         }
     }
 
