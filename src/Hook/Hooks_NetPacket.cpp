@@ -76,8 +76,8 @@ namespace {
 
         eMsg  = static_cast<EMsg>(hdr->eMsg & ~kMsgHdrProtoFlag);
         cbHdr = hdr->headerLength;
+        if (cbHdr > size - sizeof(MsgHdr)) goto fail;
         uint32 off = sizeof(MsgHdr) + cbHdr;
-        if (off > size) goto fail;
         pHdr   = data + sizeof(MsgHdr);
         pBody  = data + off;
         cbBody = size - off;
@@ -89,8 +89,9 @@ namespace {
                                   const uint8* pNewHdr, uint32 cbNewHdr,
                                   const uint8* pNewBody, uint32 cbNewBody)
     {
+        constexpr uint32 kMaxPayload = sizeof(g_RecvPacketPool[0]) - sizeof(MsgHdr);
+        if (cbNewHdr > kMaxPayload || cbNewBody > kMaxPayload - cbNewHdr) return;
         uint32 newSize = sizeof(MsgHdr) + cbNewHdr + cbNewBody;
-        if (newSize > sizeof(g_RecvPacketPool[0])) return;
 
         uint8* buf = g_RecvPacketPool[g_RecvPacketPoolIdx];
         const MsgHdr* orig = reinterpret_cast<const MsgHdr*>(p->m_pubData);
@@ -112,8 +113,9 @@ namespace {
                                     const uint8* pNewBody, uint32 cbNewBody,
                                     uint32* pNewSize)
     {
+        constexpr uint32 kMaxPayload = sizeof(g_SendPacketPool[0]) - sizeof(MsgHdr);
+        if (cbHdr > kMaxPayload || cbNewBody > kMaxPayload - cbHdr) return nullptr;
         *pNewSize = sizeof(MsgHdr) + cbHdr + cbNewBody;
-        if (*pNewSize > sizeof(g_SendPacketPool[0])) return nullptr;
 
         uint8* buf = g_SendPacketPool[g_SendPacketPoolIdx];
         const MsgHdr* orig = reinterpret_cast<const MsgHdr*>(pubData);
@@ -986,8 +988,9 @@ namespace Hooks_NetPacket_OnlineFix {
     bool HandleSend(const uint8* pBody, uint32 cbBody,
                     const uint8* pHdr, uint32 cbHdr)
     {
+        if (!pBody || cbBody == 0) return false;
         CMsgClientGamesPlayed msg;
-        if (!msg.ParseFromArray(pBody, cbBody)) {
+        if (!msg.ParseFromArray(pBody, static_cast<int>(cbBody))) {
             LOG_ONLINEFIX_WARN("OnlineFix: failed to parse CMsgClientGamesPlayed");
             return false;
         }
@@ -1266,7 +1269,7 @@ namespace {
 
         case k_EMsgServiceMethodCallFromClient: {   // 151
             CMsgProtoBufHeader hdr;
-            if (hdr.ParseFromArray(pHdr, cbHdr) && hdr.has_target_job_name()) {
+            if (pHdr && cbHdr > 0 && hdr.ParseFromArray(pHdr, static_cast<int>(cbHdr)) && hdr.has_target_job_name()) {
                 g_NeedReplaceSend = SendServiceJob(hdr.target_job_name().c_str(), pBody, cbBody, pHdr, cbHdr);
             }
             return;
@@ -1352,7 +1355,7 @@ namespace {
         case k_EMsgServiceMethodResponse:              // 147
         case k_EMsgServiceMethodSendToClient: {        // 152
             CMsgProtoBufHeader hdr;
-            if (hdr.ParseFromArray(pHdr, cbHdr) && hdr.has_target_job_name())
+            if (pHdr && cbHdr > 0 && hdr.ParseFromArray(pHdr, static_cast<int>(cbHdr)) && hdr.has_target_job_name())
                 RecvServiceJob(hdr.target_job_name().c_str(), pBody, cbBody, pHdr, cbHdr);
             return;
         }
