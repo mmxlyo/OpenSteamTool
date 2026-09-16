@@ -108,20 +108,24 @@ namespace {
         TryInitFakeLicenseOnce();
 
         if (LuaConfig::HasDepot(appId, false)) {
-            bool isTrulyOwned = result && (pOwn->ExistInPackageNums > 1) && !pOwn->bFamilyShared && !pOwn->bBorrowed;
-            if (isTrulyOwned) {
-                // Actually owned — record so HasDepot excludes it going forward
-                LuaConfig::MarkOwned(appId);
-                pOwn->ReleaseState = EAppReleaseState::Released;
+            if (pOwn) {
+                bool isTrulyOwned = result && (pOwn->ExistInPackageNums > 1) && !pOwn->bFamilyShared && !pOwn->bBorrowed;
+                if (isTrulyOwned) {
+                    // Actually owned — record so HasDepot excludes it going forward
+                    LuaConfig::MarkOwned(appId);
+                    pOwn->ReleaseState = EAppReleaseState::Released;
+                } else {
+                    pOwn->PackageId       = kInjectedPackageId;
+                    pOwn->ReleaseState    = EAppReleaseState::Released;
+                    pOwn->bOwnsLicense    = true; // This forces DLCs and enables decoupled family shared games
+                    pOwn->bFreeLicense    = false;
+                    pOwn->bFamilyShared   = false;
+                    pOwn->bBorrowed       = false;
+                    pOwn->bLicenseLocked  = false;
+                    pOwn->SteamId32       = 0;
+                    return true;
+                }
             } else {
-                pOwn->PackageId       = kInjectedPackageId;
-                pOwn->ReleaseState    = EAppReleaseState::Released;
-                pOwn->bOwnsLicense    = true; // This forces DLCs and enables decoupled family shared games
-                pOwn->bFreeLicense    = false;
-                pOwn->bFamilyShared   = false;
-                pOwn->bBorrowed       = false;
-                pOwn->bLicenseLocked  = false;
-                pOwn->SteamId32       = 0;
                 return true;
             }
         }
