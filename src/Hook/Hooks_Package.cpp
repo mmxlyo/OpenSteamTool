@@ -2,6 +2,7 @@
 #include "HookMacros.h"
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
+#include "Utils/Config/Config.h"
 #include "Utils/HookSupport/VehCommon.h"
 
 #include <atomic>
@@ -120,6 +121,21 @@ namespace {
                 return true;
             }
         }
+
+        if (result && pOwn) {
+            const auto familyConfig = Config::GetFamilySharingSettings();
+            if (pOwn->bFamilyShared || pOwn->bBorrowed) {
+                if (familyConfig.disableFamilyLock && pOwn->bLicenseLocked) {
+                    LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bLicenseLocked for shared AppId={}", appId);
+                    pOwn->bLicenseLocked = false;
+                }
+                if (familyConfig.bypassGameLimits && pOwn->bBorrowed) {
+                    LOG_PACKAGE_DEBUG("CheckAppOwnership: Clearing bBorrowed for shared AppId={}", appId);
+                    pOwn->bBorrowed = false;
+                }
+            }
+        }
+
         return result;
     }
 }

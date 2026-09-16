@@ -6,6 +6,7 @@
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Tickets/EticketClient.h"
 #include "Utils/Support/FnvHash.h"
+#include "Utils/Config/Config.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include <chrono>
 #include <cstdio>
@@ -497,7 +498,12 @@ namespace Hooks_NetPacket_FamilySharing {
 
     void ClearBody(const uint8*, uint32)
     {
-        LOG_NETPACKET_DEBUG("Clearing family sharing message...");
+        const auto familyConfig = Config::GetFamilySharingSettings();
+        if (!familyConfig.disableFamilyLock) {
+            return;
+        }
+
+        LOG_NETPACKET_DEBUG("FamilySharing: Clearing incoming family sharing notification message...");
         g_cbNewBody = 0;
         g_NeedReplaceBody = true;
     }
@@ -956,6 +962,7 @@ namespace Hooks_NetPacket_OnlineFix {
 
         Hooks_NetPacket_RichPresence::TrackSend(msg, pHdr, cbHdr);
 
+        const auto familyConfig = Config::GetFamilySharingSettings();
         bool patched = false;
         for (int i = 0; i < msg.games_played_size(); ++i) {
             auto* game = msg.mutable_games_played(i);
@@ -973,6 +980,17 @@ namespace Hooks_NetPacket_OnlineFix {
                         LOG_ONLINEFIX_INFO("OnlineFix: 480 -> name '{}' (real appid {})",
                             name, realAppId);
                     }
+                }
+            }
+
+            // Family sharing concurrency / anti-lock protection:
+            // Mask lender's owner_id to 1 so Steam server does not lock out the lender.
+            if (familyConfig.disableFamilyLock) {
+                if (game->has_owner_id() && game->owner_id() != 0 && game->owner_id() != 1) {
+                    LOG_NETPACKET_INFO("FamilySharing: Masking owner_id {} -> 1 for game_id {}",
+                                       game->owner_id(), game->game_id());
+                    game->set_owner_id(1);
+                    patched = true;
                 }
             }
         }

@@ -31,6 +31,11 @@ namespace Config {
         std::string library;
     };
 
+    struct FamilySharingSettings {
+        bool disableFamilyLock = true;
+        bool bypassGameLimits  = true;
+    };
+
     struct LoadResult {
         bool applied = false;
         bool luaPathsChanged = false;
@@ -44,6 +49,7 @@ namespace Config {
     std::vector<std::string> GetLuaPaths();
     std::string GetRemoteUrlTemplate();
     CloudSettings GetCloudSettings();
+    FamilySharingSettings GetFamilySharingSettings();
     bool GetStatsEnableApi();
     std::vector<InjectDll> GetInjectDlls();
 
@@ -74,5 +80,9 @@ namespace Config {
     // [cloud] - optional Steam Cloud save redirection via CloudRedirect.
     inline bool cloudEnabled = false;
     inline std::string cloudLibrary;
+
+    // [family_sharing]
+    inline bool familyDisableFamilyLock = true;
+    inline bool familyBypassGameLimits  = true;
 
 }

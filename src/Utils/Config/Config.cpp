@@ -22,6 +22,7 @@ namespace {
         bool statsEnableApi = true;
         std::vector<InjectDll> injectDlls;
         CloudSettings cloud;
+        FamilySharingSettings familySharing;
     };
 
     std::mutex g_mutex;
@@ -64,6 +65,8 @@ namespace {
         injectDlls             = snapshot.injectDlls;
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
+        familyDisableFamilyLock = snapshot.familySharing.disableFamilyLock;
+        familyBypassGameLimits  = snapshot.familySharing.bypassGameLimits;
     }
 
     void ApplyManifestProvider(const std::string& provider) {
@@ -219,14 +222,23 @@ namespace {
                     snapshot.cloud.library = *val;
             }
 
+            // [family_sharing]
+            if (auto family = tbl["family_sharing"].as_table()) {
+                if (auto val = (*family)["disable_family_lock"].value<bool>())
+                    snapshot.familySharing.disableFamilyLock = *val;
+                if (auto val = (*family)["bypass_game_limits"].value<bool>())
+                    snapshot.familySharing.bypassGameLimits = *val;
+            }
+
             ApplyManifestProvider(snapshot.manifestProvider);
             LoadResult result = ApplySnapshotLocked(snapshot);
-            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={}",
+            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={} family.disable_lock={}",
                      ManifestClient::ActiveProviderName(),
                      ToString(snapshot.logLevel),
                      (uint32_t)snapshot.luaPaths.size(),
                      snapshot.statsEnableApi,
-                     snapshot.remoteUrlTemplate.empty() ? "<default>" : snapshot.remoteUrlTemplate);
+                     snapshot.remoteUrlTemplate.empty() ? "<default>" : snapshot.remoteUrlTemplate,
+                     snapshot.familySharing.disableFamilyLock);
             return result;
 
         } catch (const toml::parse_error& e) {
@@ -290,6 +302,14 @@ namespace {
         return {
             cloudEnabled,
             cloudLibrary,
+        };
+    }
+
+    FamilySharingSettings GetFamilySharingSettings() {
+        std::lock_guard lock(g_mutex);
+        return {
+            familyDisableFamilyLock,
+            familyBypassGameLimits,
         };
     }
 
