@@ -501,9 +501,20 @@ namespace Hooks_NetPacket_FamilySharing {
     // 0 apps are currently running, actively clearing library lock state.
     void HandleRecv_NotifyRunningApps(const uint8* pBody, uint32 cbBody)
     {
+        if (!pBody || cbBody == 0) {
+            g_cbNewBody = 0;
+            g_NeedReplaceBody = true;
+            return;
+        }
+
         CFamilyGroupsClient_NotifyRunningApps_Notification notify;
-        if (notify.ParseFromArray(pBody, cbBody)) {
+        if (notify.ParseFromArray(pBody, static_cast<int>(cbBody))) {
             const int runningCount = notify.running_apps_size();
+            if (runningCount == 0) {
+                // If there are already 0 running apps, pass through untouched.
+                return;
+            }
+
             notify.clear_running_apps();
 
             const auto encSize = notify.ByteSizeLong();
@@ -1021,7 +1032,7 @@ namespace Hooks_NetPacket_OnlineFix {
             LOG_ONLINEFIX_WARN("OnlineFix: encoded size {} exceeds buffer", g_cbSendNewBody);
             return false;
         }
-        if (!msg.SerializeToArray(g_SendNewBody, kMaxBodySize)) {
+        if (!msg.SerializeToArray(g_SendNewBody, static_cast<int>(sizeof(g_SendNewBody)))) {
             LOG_ONLINEFIX_WARN("OnlineFix: failed to SerializeToArray");
             return false;
         }
@@ -1294,6 +1305,7 @@ namespace {
                         const uint8* pBody, uint32 cbBody,
                         const uint8* pHdr, uint32 cbHdr)
     {
+        if (!targetJobName) return;
         LOG_NETPACKET_DEBUG("Recv target_job_name: {}", targetJobName);
         g_NeedReplaceBody = false;
         g_NeedReplaceHdr  = false;

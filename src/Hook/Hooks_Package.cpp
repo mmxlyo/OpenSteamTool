@@ -106,6 +106,7 @@ namespace {
 
         bool result = oCheckAppOwnership(pObj, appId, pOwn);
         TryInitFakeLicenseOnce();
+        TryProcessPendingLicenseRefresh();
 
         if (LuaConfig::HasDepot(appId, false)) {
             if (pOwn) {
