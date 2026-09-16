@@ -32,6 +32,7 @@ namespace {
     // arg5=pGameID (CGameID*; low 24 bits = AppId)
     static void OnSpawnProcessHit(OSTPlatform::Trap::Context& ctx, const VehCommon::Int3Site& /*site*/) {
         CGameID* pGameID = VehCommon::GetArg<CGameID*>(ctx, 5);
+        if (!pGameID) return;
         AppId_t appId = static_cast<AppId_t>(pGameID->AppID(true));
         const char* cmdLine = VehCommon::GetArg<const char*>(ctx, 3);
 

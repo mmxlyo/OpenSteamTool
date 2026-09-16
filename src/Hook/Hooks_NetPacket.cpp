@@ -436,8 +436,9 @@ namespace Hooks_NetPacket_OwnershipTicket {
 
     void HandleRecv(const uint8* pBody, uint32 cbBody)
     {
+        if (!pBody || cbBody == 0) return;
         CMsgClientGetAppOwnershipTicketResponse resp;
-        if (!resp.ParseFromArray(pBody, cbBody)) {
+        if (!resp.ParseFromArray(pBody, static_cast<int>(cbBody))) {
             LOG_NETPACKET_WARN("OwnershipTicketResponse[858]: failed to ParseFromArray (cbBody={})", cbBody);
             return;
         }
@@ -478,7 +479,7 @@ namespace Hooks_NetPacket_OwnershipTicket {
             LOG_NETPACKET_WARN("OwnershipTicketResponse[858]: modified message too large ({})", encSize);
             return;
         }
-        if (!resp.SerializeToArray(g_NewBody, sizeof(g_NewBody))) {
+        if (!resp.SerializeToArray(g_NewBody, static_cast<int>(sizeof(g_NewBody)))) {
             LOG_NETPACKET_WARN("OwnershipTicketResponse[858]: failed to SerializeToArray");
             return;
         }
