@@ -1,4 +1,5 @@
 name: CI
+run-name: ${{ (github.ref_name == 'test' || github.base_ref == 'test') && format('[Test] CI - {0}', github.ref_name) || format('CI - {0}', github.ref_name) }}
 
 on:
   pull_request:
@@ -13,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build (${{ matrix.config }})
+    name: ${{ (github.ref_name == 'test' || github.base_ref == 'test') && '[Test] ' || '' }}Build (${{ matrix.config }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -35,6 +36,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: OpenSteamTool-${{ matrix.config }}-pr${{ github.event.pull_request.number || github.run_number }}
+          name: ${{ (github.ref_name == 'test' || github.base_ref == 'test') && '[Test] ' || '' }}OpenSteamTool-${{ matrix.config }}-pr${{ github.event.pull_request.number || github.run_number }}
           path: build/${{ matrix.config }}/
           retention-days: 7
