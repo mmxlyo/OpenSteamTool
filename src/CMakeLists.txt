@@ -19,6 +19,12 @@ set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "" FORCE)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
+# Direct all static libraries and import libraries (.lib, .exp) to a dedicated
+# lib/ subdirectory so Release and Debug distribution folders contain only runtime artifacts.
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/$<CONFIG>")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/lib/Release")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/lib/Debug")
+
 
 if(NOT WIN32)
     message(STATUS "OpenSteamTool: no targets on non-Windows platforms; skipping.")
