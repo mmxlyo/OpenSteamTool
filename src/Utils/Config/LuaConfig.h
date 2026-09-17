@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace LuaConfig{
-    bool HasDepot(AppId_t appId, bool checkOwned=true);
+    bool HasDepot(AppId_t appId, bool excludeOwned = true);
     bool IsOwned(AppId_t appId);
     void MarkOwned(AppId_t appId);
     std::vector<AppId_t> GetAllDepotIds();

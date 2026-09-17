@@ -27,7 +27,7 @@
 #include "Utils/Config/Config.h"
 
 
-#include <string.h>
+#include <cstring>
 
 inline OSTPlatform::DynamicLibrary::ModuleHandle client_hModule = nullptr;
 inline OSTPlatform::DynamicLibrary::ModuleHandle ui_hModule = nullptr;

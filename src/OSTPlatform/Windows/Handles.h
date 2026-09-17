@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <winhttp.h>
 
 #include <cstdint>
 #include <utility>
@@ -54,6 +55,39 @@ private:
 
 using UniqueHandle = UniqueHandleT<NullHandlePolicy>;
 using UniqueFileHandle = UniqueHandleT<InvalidHandlePolicy>;
+
+class UniqueWinHttpHandle {
+public:
+    UniqueWinHttpHandle() noexcept = default;
+    explicit UniqueWinHttpHandle(HINTERNET handle) noexcept : handle_(handle) {}
+
+    UniqueWinHttpHandle(UniqueWinHttpHandle&& other) noexcept : handle_(other.handle_) {
+        other.handle_ = nullptr;
+    }
+    UniqueWinHttpHandle& operator=(UniqueWinHttpHandle&& other) noexcept {
+        if (this != &other) {
+            Reset(other.handle_);
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    UniqueWinHttpHandle(const UniqueWinHttpHandle&) = delete;
+    UniqueWinHttpHandle& operator=(const UniqueWinHttpHandle&) = delete;
+
+    ~UniqueWinHttpHandle() { Reset(); }
+
+    HINTERNET get() const noexcept { return handle_; }
+    explicit operator bool() const noexcept { return handle_ != nullptr; }
+
+    void Reset(HINTERNET handle = nullptr) noexcept {
+        if (handle_) ::WinHttpCloseHandle(handle_);
+        handle_ = handle;
+    }
+
+private:
+    HINTERNET handle_ = nullptr;
+};
 
 class UniqueRegKey {
 public:

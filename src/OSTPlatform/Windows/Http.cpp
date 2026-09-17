@@ -4,6 +4,7 @@
 #include "include/Log.h"
 #include "include/Numbers.h"
 
+#include "Windows/Handles.h"
 #include <windows.h>
 #include <winhttp.h>
 
@@ -77,48 +78,45 @@ Result Execute(const wchar_t* method,
 
     auto t0 = std::chrono::steady_clock::now();
 
-    HINTERNET hSession = WinHttpOpen(L"OpenSteamTool/1.0",
+    Windows::UniqueWinHttpHandle hSession(WinHttpOpen(L"OpenSteamTool/1.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
-        0);
+        0));
     if (!hSession) {
         OSTP_LOG_WARN("{} - WinHttpOpen failed (error={})", url ? url : "", GetLastError());
         return r;
     }
 
-    WinHttpSetTimeouts(hSession, timeoutResolve, timeoutConnect, timeoutSend, timeoutRecv);
+    WinHttpSetTimeouts(hSession.get(), timeoutResolve, timeoutConnect, timeoutSend, timeoutRecv);
 
-    HINTERNET hConnect = WinHttpConnect(hSession, pu.host.c_str(), pu.port, 0);
+    Windows::UniqueWinHttpHandle hConnect(WinHttpConnect(hSession.get(), pu.host.c_str(), pu.port, 0));
     if (!hConnect) {
         OSTP_LOG_WARN("{} - WinHttpConnect(host='{}', port={}) failed (error={})",
                       url ? url : "",
                       Encoding::WideToUtf8(pu.host),
                       pu.port,
                       GetLastError());
-        WinHttpCloseHandle(hSession);
         return r;
     }
 
     const DWORD flags = pu.tls ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(
-        hConnect,
+    Windows::UniqueWinHttpHandle hRequest(WinHttpOpenRequest(
+        hConnect.get(),
         method,
         pu.path.c_str(),
         nullptr,
         WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
-        flags);
+        flags));
     if (!hRequest) {
         OSTP_LOG_WARN("{} - WinHttpOpenRequest failed (error={})", url ? url : "", GetLastError());
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
         return r;
     }
 
     if (headers && headers[0]) {
         if (!WinHttpAddRequestHeaders(
-            hRequest,
+            hRequest.get(),
             headers,
             static_cast<DWORD>(wcslen(headers)),
             WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE)) {
@@ -127,15 +125,15 @@ Result Execute(const wchar_t* method,
     }
 
     const DWORD totalLen = reqBodyLen;
-    if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+    if (!WinHttpSendRequest(hRequest.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0,
             const_cast<void*>(reqBody), reqBodyLen, totalLen, 0)) {
         OSTP_LOG_WARN("{} - WinHttpSendRequest failed (error={})", url ? url : "", GetLastError());
-    } else if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+    } else if (!WinHttpReceiveResponse(hRequest.get(), nullptr)) {
         OSTP_LOG_WARN("{} - WinHttpReceiveResponse failed (error={})", url ? url : "", GetLastError());
     } else {
         DWORD sz = sizeof(r.status);
         if (!WinHttpQueryHeaders(
-            hRequest,
+            hRequest.get(),
             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
             WINHTTP_HEADER_NAME_BY_INDEX,
             &r.status,
@@ -146,7 +144,7 @@ Result Execute(const wchar_t* method,
 
         DWORD avail = 0;
         while (true) {
-            if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
+            if (!WinHttpQueryDataAvailable(hRequest.get(), &avail)) {
                 OSTP_LOG_WARN("{} - WinHttpQueryDataAvailable failed (error={})", url ? url : "", GetLastError());
                 break;
             }
@@ -155,7 +153,7 @@ Result Execute(const wchar_t* method,
             const size_t off = r.body.size();
             r.body.resize(off + avail);
             DWORD read = 0;
-            if (!WinHttpReadData(hRequest, r.body.data() + off, avail, &read)) {
+            if (!WinHttpReadData(hRequest.get(), r.body.data() + off, avail, &read)) {
                 OSTP_LOG_WARN("{} - WinHttpReadData(size={}) failed (error={})",
                               url ? url : "", avail, GetLastError());
                 r.body.resize(off);
@@ -176,10 +174,6 @@ Result Execute(const wchar_t* method,
         }
         r.ok = true;
     }
-
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0).count();
