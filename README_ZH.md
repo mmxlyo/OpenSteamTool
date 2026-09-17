@@ -64,7 +64,7 @@
 
 ### 使用 `extract_tickets` 提取授权与配置文件
 
-`extract_tickets` 工具可在拥有目标游戏的机器上提取该游戏所需的授权文件（AppTicket / ETicket）、拥有的 DLC 及清单文件（`*.manifest`），并一键生成可直接使用的 `<appid>.lua` 配置文件。
+`extract_tickets` 工具可在拥有目标游戏的机器上提取该游戏所需的授权文件（AppTicket / ETicket）、拥有的 DLC、访问令牌（AccessToken）及清单文件（`*.manifest`），并一键生成可直接使用的 `<appid>.lua` 配置文件。
 
 * **下载地址**：可前往 [GitHub Actions Tools 页面](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml) 下载编译好的 `extract_tickets.exe`。
 * **使用方法**：
@@ -73,7 +73,7 @@
   extract_tickets.exe 1361510
   ```
 * **输出内容**（保存在 `<appid>/` 文件夹中）：
-  * `<appid>.lua` — 完整、开箱即用的配置文件（包含 AppId、拥有的 DLC、Depot 密钥、固定清单 `setManifestid` 及授权配置），直接复制到 `config/lua/` 目录即可生效。
+  * `<appid>.lua` — 完整、开箱即用的配置文件（包含 AppId、拥有的 DLC、访问令牌 `addtoken`、Depot 密钥、固定清单 `setManifestid` 及授权配置），直接复制到 `config/lua/` 目录即可生效。
   * `*.manifest` — 自动从本地缓存提取的 Depot 清单文件。
   * `appticket.bin` / `eticket.bin` — 原始授权令牌文件。
 

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -36,6 +37,102 @@ struct DlcInfo {
     bool isOwned{false};
 };
 
+// RAII wrapper for Windows HANDLE
+struct ScopedHandle {
+    HANDLE handle{INVALID_HANDLE_VALUE};
+    ScopedHandle() = default;
+    explicit ScopedHandle(HANDLE h) noexcept : handle(h) {}
+    ~ScopedHandle() noexcept {
+        if (handle != INVALID_HANDLE_VALUE && handle != nullptr) {
+            CloseHandle(handle);
+        }
+    }
+    ScopedHandle(const ScopedHandle&) = delete;
+    ScopedHandle& operator=(const ScopedHandle&) = delete;
+    ScopedHandle(ScopedHandle&& other) noexcept : handle(other.handle) {
+        other.handle = INVALID_HANDLE_VALUE;
+    }
+    ScopedHandle& operator=(ScopedHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle != INVALID_HANDLE_VALUE && handle != nullptr) {
+                CloseHandle(handle);
+            }
+            handle = other.handle;
+            other.handle = INVALID_HANDLE_VALUE;
+        }
+        return *this;
+    }
+    operator HANDLE() const noexcept { return handle; }
+    bool IsValid() const noexcept { return handle != INVALID_HANDLE_VALUE && handle != nullptr; }
+};
+
+// RAII wrapper for MapViewOfFile memory pointer
+struct ScopedFileMappingView {
+    const void* address{nullptr};
+    ScopedFileMappingView() = default;
+    explicit ScopedFileMappingView(const void* addr) noexcept : address(addr) {}
+    ~ScopedFileMappingView() noexcept {
+        if (address) {
+            UnmapViewOfFile(address);
+        }
+    }
+    ScopedFileMappingView(const ScopedFileMappingView&) = delete;
+    ScopedFileMappingView& operator=(const ScopedFileMappingView&) = delete;
+    ScopedFileMappingView(ScopedFileMappingView&& other) noexcept : address(other.address) {
+        other.address = nullptr;
+    }
+    ScopedFileMappingView& operator=(ScopedFileMappingView&& other) noexcept {
+        if (this != &other) {
+            if (address) {
+                UnmapViewOfFile(address);
+            }
+            address = other.address;
+            other.address = nullptr;
+        }
+        return *this;
+    }
+    template<typename T>
+    const T* As() const noexcept { return static_cast<const T*>(address); }
+    explicit operator bool() const noexcept { return address != nullptr; }
+};
+
+// RAII guard for Steam client session and loaded module
+struct SteamSessionGuard {
+    ISteamClient* client{nullptr};
+    HSteamPipe pipe{0};
+    HMODULE module{nullptr};
+
+    ~SteamSessionGuard() {
+        if (client && pipe) {
+            client->BReleaseSteamPipe(pipe);
+        }
+        if (module) {
+            FreeLibrary(module);
+            SetDllDirectoryA(nullptr);
+        }
+    }
+};
+
+std::string SanitizeComment(std::string_view text) {
+    std::string out(text);
+    for (char& c : out) {
+        if (c == '\r' || c == '\n') c = ' ';
+    }
+    return out;
+}
+
+std::vector<std::string> TokenizeQuoted(std::string_view line) {
+    std::vector<std::string> tokens;
+    size_t pos = 0;
+    while ((pos = line.find('"', pos)) != std::string_view::npos) {
+        size_t endPos = line.find('"', pos + 1);
+        if (endPos == std::string_view::npos) break;
+        tokens.emplace_back(line.substr(pos + 1, endPos - pos - 1));
+        pos = endPos + 1;
+    }
+    return tokens;
+}
+
 bool IsDecimal(std::string_view value) {
     if (value.empty()) return false;
     for (char ch : value) {
@@ -45,26 +142,31 @@ bool IsDecimal(std::string_view value) {
 }
 
 bool IsValidManifestId(std::string_view value) {
-    if (!IsDecimal(value)) return false;
+    if (value.empty()) return false;
+    bool hasNonZero = false;
     for (char ch : value) {
-        if (ch != '0') return true;
+        if (!std::isdigit(static_cast<unsigned char>(ch))) return false;
+        if (ch != '0') hasNonZero = true;
     }
-    return false;
+    return hasNonZero;
 }
 
-std::optional<uint32_t> ParseAppId(const std::string& value) {
-    if (!IsDecimal(value)) return std::nullopt;
+bool IsHex64(std::string_view value) {
+    if (value.size() != 64) return false;
+    for (char ch : value) {
+        if (!std::isxdigit(static_cast<unsigned char>(ch))) return false;
+    }
+    return true;
+}
 
-    unsigned long parsed{0};
-    try {
-        size_t consumed{0};
-        parsed = std::stoul(value, &consumed, 10);
-        if (consumed != value.size() || parsed == 0 || parsed > 0xFFFFFFFFul) return std::nullopt;
-    } catch (...) {
+std::optional<uint32_t> ParseAppId(std::string_view value) {
+    if (value.empty()) return std::nullopt;
+    uint32_t parsed{0};
+    auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (ec != std::errc{} || ptr != value.data() + value.size() || parsed == 0) {
         return std::nullopt;
     }
-
-    return static_cast<uint32_t>(parsed);
+    return parsed;
 }
 
 std::optional<uint32_t> ReadAppIdFromConsole() {
@@ -206,14 +308,7 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
             line.erase(comment);
         }
 
-        std::vector<std::string> tokens;
-        size_t pos = 0;
-        while ((pos = line.find('"', pos)) != std::string::npos) {
-            size_t endPos = line.find('"', pos + 1);
-            if (endPos == std::string::npos) break;
-            tokens.push_back(line.substr(pos + 1, endPos - pos - 1));
-            pos = endPos + 1;
-        }
+        auto tokens = TokenizeQuoted(line);
 
         if (tokens.size() >= 2) {
             if (_stricmp(tokens[0].c_str(), "path") == 0) {
@@ -329,14 +424,7 @@ void ParseAcfDepots(const std::string& acfPath,
             line.erase(comment);
         }
 
-        std::vector<std::string> tokens;
-        size_t pos = 0;
-        while ((pos = line.find('"', pos)) != std::string::npos) {
-            size_t endPos = line.find('"', pos + 1);
-            if (endPos == std::string::npos) break;
-            tokens.push_back(line.substr(pos + 1, endPos - pos - 1));
-            pos = endPos + 1;
-        }
+        auto tokens = TokenizeQuoted(line);
 
         if (!inInstalledDepots && !inMountedDepots) {
             for (const auto& tok : tokens) {
@@ -377,16 +465,11 @@ void ParseAcfDepots(const std::string& acfPath,
         }
 
         if (inInstalledDepots) {
-            if (tokens.size() == 1 && IsDecimal(tokens[0])) {
-                auto parsed = ParseAppId(tokens[0]);
-                if (parsed) {
+            if (tokens.size() == 1) {
+                if (auto parsed = ParseAppId(tokens[0])) {
                     currentDepotId = *parsed;
-                    if (outDepots.find(currentDepotId) == outDepots.end()) {
-                        outDepots[currentDepotId] = "";
-                    }
-                    if (outDepotToDlc.find(currentDepotId) == outDepotToDlc.end()) {
-                        outDepotToDlc[currentDepotId] = 0;
-                    }
+                    outDepots.try_emplace(currentDepotId, "");
+                    outDepotToDlc.try_emplace(currentDepotId, 0);
                 }
             } else if (tokens.size() >= 2 && currentDepotId != 0) {
                 if (_stricmp(tokens[0].c_str(), "manifest") == 0) {
@@ -396,14 +479,12 @@ void ParseAcfDepots(const std::string& acfPath,
                         outDlcIds.insert(*dlc);
                         outDepotToDlc[currentDepotId] = *dlc;
                         outDepotToDlc[*dlc] = *dlc;
-                        if (outDepots.find(*dlc) == outDepots.end()) {
-                            outDepots[*dlc] = "";
-                        }
+                        outDepots.try_emplace(*dlc, "");
                     }
                 }
             }
         } else if (inMountedDepots) {
-            if (tokens.size() >= 2 && IsDecimal(tokens[0]) && IsValidManifestId(tokens[1])) {
+            if (tokens.size() >= 2 && IsValidManifestId(tokens[1])) {
                 if (auto dId = ParseAppId(tokens[0])) {
                     if (outDepots[*dId].empty()) {
                         outDepots[*dId] = tokens[1];
@@ -432,14 +513,7 @@ std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::str
             line.erase(comment);
         }
 
-        std::vector<std::string> tokens;
-        size_t pos = 0;
-        while ((pos = line.find('"', pos)) != std::string::npos) {
-            size_t endPos = line.find('"', pos + 1);
-            if (endPos == std::string::npos) break;
-            tokens.push_back(line.substr(pos + 1, endPos - pos - 1));
-            pos = endPos + 1;
-        }
+        auto tokens = TokenizeQuoted(line);
 
         if (!inDepots) {
             for (const auto& tok : tokens) {
@@ -470,13 +544,12 @@ std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::str
 
         if (!inDepots) continue;
 
-        if (tokens.size() == 1 && IsDecimal(tokens[0])) {
-            auto parsed = ParseAppId(tokens[0]);
-            if (parsed) {
+        if (tokens.size() == 1) {
+            if (auto parsed = ParseAppId(tokens[0])) {
                 currentDepotId = *parsed;
             }
         } else if (tokens.size() >= 2) {
-            if (_stricmp(tokens[0].c_str(), "DecryptionKey") == 0 && tokens[1].size() == 64 && currentDepotId != 0) {
+            if (_stricmp(tokens[0].c_str(), "DecryptionKey") == 0 && IsHex64(tokens[1]) && currentDepotId != 0) {
                 depotKeys[currentDepotId] = tokens[1];
             }
         }
@@ -494,14 +567,14 @@ std::unordered_map<uint32_t, std::string> ParseConfigVdfDepotKeys(const std::str
                 size_t keyEnd = fullText.find('"', keyStart + 1);
                 if (keyEnd != std::string::npos && (keyEnd - keyStart - 1) == 64) {
                     std::string key = fullText.substr(keyStart + 1, 64);
-                    size_t searchBack = offset;
-                    while (searchBack > 0 && fullText[searchBack] != '{') searchBack--;
-                    size_t q2 = fullText.rfind('"', searchBack);
-                    if (q2 != std::string::npos && q2 > 0) {
-                        size_t q1 = fullText.rfind('"', q2 - 1);
-                        if (q1 != std::string::npos) {
-                            std::string candidateId = fullText.substr(q1 + 1, q2 - q1 - 1);
-                            if (IsDecimal(candidateId)) {
+                    if (IsHex64(key)) {
+                        size_t searchBack = offset;
+                        while (searchBack > 0 && fullText[searchBack] != '{') searchBack--;
+                        size_t q2 = fullText.rfind('"', searchBack);
+                        if (q2 != std::string::npos && q2 > 0) {
+                            size_t q1 = fullText.rfind('"', q2 - 1);
+                            if (q1 != std::string::npos) {
+                                std::string candidateId = fullText.substr(q1 + 1, q2 - q1 - 1);
                                 if (auto dId = ParseAppId(candidateId)) {
                                     depotKeys[*dId] = key;
                                 }
@@ -548,12 +621,8 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
             uint32_t safeCount = std::min(count, static_cast<uint32_t>(std::size(depots)));
             for (uint32_t i = 0; i < safeCount; ++i) {
                 if (depots[i] != 0) {
-                    if (knownDepotManifests.find(depots[i]) == knownDepotManifests.end()) {
-                        knownDepotManifests[depots[i]] = "";
-                    }
-                    if (depotToDlc.find(depots[i]) == depotToDlc.end()) {
-                        depotToDlc[depots[i]] = 0;
-                    }
+                    knownDepotManifests.try_emplace(depots[i], "");
+                    depotToDlc.try_emplace(depots[i], 0);
                 }
             }
 
@@ -581,9 +650,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                         depotToDlc[dlcId] = dlcId;
 
                         // Ensure DLC itself is checked for depot manifests
-                        if (knownDepotManifests.find(dlcId) == knownDepotManifests.end()) {
-                            knownDepotManifests[dlcId] = "";
-                        }
+                        knownDepotManifests.try_emplace(dlcId, "");
 
                         // Also query any installed depots for this DLC
                         DepotId_t dlcDepots[64]{};
@@ -591,9 +658,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
                         uint32_t safeDlcCount = std::min(dlcDepotCount, static_cast<uint32_t>(std::size(dlcDepots)));
                         for (uint32_t j = 0; j < safeDlcCount; ++j) {
                             if (dlcDepots[j] != 0) {
-                                if (knownDepotManifests.find(dlcDepots[j]) == knownDepotManifests.end()) {
-                                    knownDepotManifests[dlcDepots[j]] = "";
-                                }
+                                knownDepotManifests.try_emplace(dlcDepots[j], "");
                                 depotToDlc[dlcDepots[j]] = dlcId;
                             }
                         }
@@ -636,9 +701,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
             DlcInfo& d = dlcMap[dlcId];
             d.dlcId = dlcId;
             d.isOwned = true;
-            if (knownDepotManifests.find(dlcId) == knownDepotManifests.end()) {
-                knownDepotManifests[dlcId] = "";
-            }
+            knownDepotManifests.try_emplace(dlcId, "");
         }
     }
 
@@ -674,7 +737,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     }
 
     for (uint32_t dlcId : knownDlcIds) {
-        if (addedDepots.find(dlcId) == addedDepots.end()) {
+        if (!addedDepots.contains(dlcId)) {
             auto it = allDepotKeys.find(dlcId);
             if (it != allDepotKeys.end() && !it->second.empty()) {
                 result.push_back({dlcId, it->second, "", "", dlcId});
@@ -684,7 +747,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     }
 
     for (const auto& [dId, key] : allDepotKeys) {
-        if (addedDepots.find(dId) == addedDepots.end()) {
+        if (!addedDepots.contains(dId)) {
             bool inRange = (dId >= appId && dId <= appId + 50);
             uint32_t matchedDlcId = 0;
             if (!inRange) {
@@ -709,7 +772,7 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     // Also check known depots that might not have keys in config.vdf,
     // so any cached manifest files can still be discovered and extracted.
     for (const auto& [dId, manifest] : knownDepotManifests) {
-        if (addedDepots.find(dId) == addedDepots.end()) {
+        if (!addedDepots.contains(dId)) {
             result.push_back({dId, "", manifest, "", getDlcIdForDepot(dId)});
             addedDepots.insert(dId);
         }
@@ -724,12 +787,9 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     }
 
     // Remove entries that have no key, no manifest file, and no valid manifest ID
-    result.erase(
-        std::remove_if(result.begin(), result.end(), [](const DepotKeyInfo& dk) {
-            return dk.hexKey.empty() && dk.manifestFilePath.empty() && !IsValidManifestId(dk.manifestId);
-        }),
-        result.end()
-    );
+    std::erase_if(result, [](const DepotKeyInfo& dk) {
+        return dk.hexKey.empty() && dk.manifestFilePath.empty() && !IsValidManifestId(dk.manifestId);
+    });
 
     std::sort(result.begin(), result.end(), [](const DepotKeyInfo& a, const DepotKeyInfo& b) {
         return a.depotId < b.depotId;
@@ -738,15 +798,14 @@ std::vector<DepotKeyInfo> ExtractDepotDecryptionKeys(
     return result;
 }
 
-HMODULE LoadSteamClient64(std::string& loadedPath) {
-    auto steamPath{FindSteamInstallPath()};
-    if (!steamPath) {
+HMODULE LoadSteamClient64(const std::string& steamPath, std::string& loadedPath) {
+    if (steamPath.empty()) {
         std::cerr << "[WARN] 未在注册表中找到 Steam 安装路径 / Failed to find Steam install path in registry.\n";
         return nullptr;
     }
 
-    const std::string steamDir{NormalizeDir(*steamPath)};
-    loadedPath = JoinPath(*steamPath, "steamclient64.dll");
+    const std::string steamDir{NormalizeDir(steamPath)};
+    loadedPath = JoinPath(steamPath, "steamclient64.dll");
 
     // steamclient64.dll pulls in tier0_s64.dll / vstdlib_s64.dll from the Steam
     // directory. Add that directory to the search path and load with
@@ -1000,13 +1059,131 @@ std::string TicketLine(const char* name, const std::optional<std::vector<uint8_t
            + ToHexString(*ticket) + "\n";
 }
 
+// Parses <steamPath>/appcache/appinfo.vdf to extract non-zero PICS AccessTokens.
+// If targetAppIds is provided, only extracts tokens for AppIDs present in that set.
+// Returns a map of AppID -> AccessToken.
+std::unordered_map<uint32_t, uint64_t> ParseAppInfoTokens(
+    const std::string& steamPath,
+    const std::unordered_set<uint32_t>* targetAppIds = nullptr) {
+    std::unordered_map<uint32_t, uint64_t> tokens;
+    if (steamPath.empty() || (targetAppIds && targetAppIds->empty())) {
+        return tokens;
+    }
+
+    const std::string appinfoPath = JoinPath(steamPath, "appcache\\appinfo.vdf");
+    ScopedHandle hFile{CreateFileA(
+        appinfoPath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    )};
+
+    if (!hFile.IsValid()) {
+        return tokens;
+    }
+
+    LARGE_INTEGER fileSize{};
+    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart < 16) {
+        return tokens;
+    }
+
+    if (fileSize.QuadPart > 1024ULL * 1024ULL * 1024ULL) {
+        return tokens;
+    }
+
+    ScopedHandle hMapping{CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr)};
+    if (!hMapping.IsValid()) {
+        return tokens;
+    }
+
+    ScopedFileMappingView mappedView{MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0)};
+    if (!mappedView) {
+        return tokens;
+    }
+
+    const auto* data = mappedView.As<uint8_t>();
+    const size_t totalBytes = static_cast<size_t>(fileSize.QuadPart);
+
+    uint32_t magic = 0;
+    std::memcpy(&magic, data, sizeof(uint32_t));
+
+    // Valid appinfo.vdf magic format: 0x075644xx (version >= 38 has AccessToken at offset +16)
+    if ((magic & 0xFFFFFF00) != 0x07564400) {
+        return tokens;
+    }
+
+    const uint8_t version = static_cast<uint8_t>(magic & 0xFF);
+    if (version < 38) {
+        return tokens;
+    }
+
+    size_t offset = 8;
+    size_t appsEnd = totalBytes;
+
+    // Version 41+ (0x29+) includes a 64-bit string table offset at file offset 8.
+    // Apps section ends at stringTableOffset.
+    if (version >= 41) {
+        if (totalBytes >= 16) {
+            uint64_t stringTableOffset = 0;
+            std::memcpy(&stringTableOffset, data + 8, sizeof(uint64_t));
+            if (stringTableOffset >= 16 && stringTableOffset <= totalBytes) {
+                appsEnd = static_cast<size_t>(stringTableOffset);
+            }
+            offset = 16;
+        }
+    }
+
+    std::unordered_set<uint32_t> matchedTargetAppIds;
+    while (offset + 8 <= appsEnd) {
+        uint32_t entryAppId = 0;
+        uint32_t entrySize = 0;
+        std::memcpy(&entryAppId, data + offset, sizeof(uint32_t));
+        std::memcpy(&entrySize, data + offset + 4, sizeof(uint32_t));
+
+        if (entryAppId == 0) {
+            break; // 0 marks end of apps list
+        }
+
+        // Each app entry header after size contains at least 60 bytes:
+        // InfoState(4) + LastUpdated(4) + AccessToken(8) + SHA1_text(20) + ChangeNumber(4) + SHA1_bin(20) = 60.
+        // Prevent overflow and ensure entry stays strictly within appsEnd.
+        if (entrySize < 60 || entrySize > appsEnd - (offset + 8)) {
+            break;
+        }
+
+        // If filtering by specific AppIDs, only extract when matched
+        if (!targetAppIds || targetAppIds->contains(entryAppId)) {
+            if (targetAppIds) {
+                matchedTargetAppIds.insert(entryAppId);
+            }
+            // AccessToken is at entry offset +16
+            uint64_t accessToken = 0;
+            std::memcpy(&accessToken, data + offset + 16, sizeof(uint64_t));
+            if (accessToken != 0) {
+                tokens[entryAppId] = accessToken;
+            }
+            if (targetAppIds && matchedTargetAppIds.size() >= targetAppIds->size()) {
+                break; // All unique target apps found; early exit to avoid scanning remaining thousands of apps
+            }
+        }
+
+        offset += 8 + entrySize;
+    }
+
+    return tokens;
+}
+
 // Everything lands in a single <appid> folder: the raw binary tickets (if available),
 // copied depot manifests, plus a plain-text summary and ready-to-use .lua script.
 bool WriteOutputs(uint32_t appId,
                   const std::optional<std::vector<uint8_t>>& ownership,
                   const std::optional<std::vector<uint8_t>>& encrypted,
                   const std::vector<DepotKeyInfo>& depotKeys,
-                  const std::vector<DlcInfo>& dlcs) {
+                  const std::vector<DlcInfo>& dlcs,
+                  const std::unordered_map<uint32_t, uint64_t>& appTokens) {
     const std::string dir{std::to_string(appId)};
     if (!CreateDirectoryA(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         std::cerr << "Failed to create directory " << dir
@@ -1035,16 +1212,29 @@ bool WriteOutputs(uint32_t appId,
         }
     }
 
+    uint64_t baseToken = 0;
+    auto baseTokIt = appTokens.find(appId);
+    if (baseTokIt != appTokens.end()) {
+        baseToken = baseTokIt->second;
+    }
+
+    std::map<uint32_t, uint64_t> relevantTokens;
+    if (baseToken != 0) {
+        relevantTokens[appId] = baseToken;
+    }
+    for (const auto& dlc : dlcs) {
+        auto it = appTokens.find(dlc.dlcId);
+        if (it != appTokens.end() && it->second != 0) {
+            relevantTokens[dlc.dlcId] = it->second;
+        }
+    }
+
     // Build tickets.txt summary
     std::string text = "appid:" + std::to_string(appId) + "\n";
     for (const auto& dlc : dlcs) {
         text += "dlc(" + std::to_string(dlc.dlcId) + ")";
         if (!dlc.name.empty()) {
-            std::string cleanName = dlc.name;
-            for (char& c : cleanName) {
-                if (c == '\r' || c == '\n') c = ' ';
-            }
-            text += ":" + cleanName;
+            text += ":" + SanitizeComment(dlc.name);
         }
         text += "\n";
     }
@@ -1056,6 +1246,16 @@ bool WriteOutputs(uint32_t appId,
     for (const auto& dk : depotKeys) {
         if (IsValidManifestId(dk.manifestId)) {
             text += "manifest(" + std::to_string(dk.depotId) + "):" + dk.manifestId + "\n";
+        }
+    }
+    if (baseToken != 0) {
+        text += "token(" + std::to_string(appId) + "):" + std::to_string(baseToken) + "\n";
+    } else {
+        text += "token(" + std::to_string(appId) + "):null\n";
+    }
+    for (const auto& [tId, tVal] : relevantTokens) {
+        if (tId != appId) {
+            text += "token(" + std::to_string(tId) + "):" + std::to_string(tVal) + "\n";
         }
     }
     text += TicketLine("appticket", ownership);
@@ -1093,8 +1293,12 @@ bool WriteOutputs(uint32_t appId,
         luaText += "addappid(" + std::to_string(appId) + ")\n";
     }
 
+    if (baseToken != 0) {
+        luaText += "addtoken(" + std::to_string(appId) + ", \"" + std::to_string(baseToken) + "\")\n";
+    }
+
     for (const auto& dk : depotKeys) {
-        if (dk.depotId != appId && (dk.dlcId == 0 || ownedDlcIdSet.find(dk.dlcId) == ownedDlcIdSet.end())) {
+        if (dk.depotId != appId && (dk.dlcId == 0 || !ownedDlcIdSet.contains(dk.dlcId))) {
             if (!dk.hexKey.empty()) {
                 luaText += "addappid(" + std::to_string(dk.depotId) + ", 1, \"" + dk.hexKey + "\")\n";
             }
@@ -1108,7 +1312,7 @@ bool WriteOutputs(uint32_t appId,
     }
     if (!hasBaseManifests) {
         for (const auto& dk : depotKeys) {
-            if (dk.depotId != appId && (dk.dlcId == 0 || ownedDlcIdSet.find(dk.dlcId) == ownedDlcIdSet.end())) {
+            if (dk.depotId != appId && (dk.dlcId == 0 || !ownedDlcIdSet.contains(dk.dlcId))) {
                 if (IsValidManifestId(dk.manifestId)) {
                     hasBaseManifests = true;
                     break;
@@ -1123,7 +1327,7 @@ bool WriteOutputs(uint32_t appId,
             luaText += "setManifestid(" + std::to_string(appId) + ", \"" + baseAppDk->manifestId + "\")\n";
         }
         for (const auto& dk : depotKeys) {
-            if (dk.depotId != appId && (dk.dlcId == 0 || ownedDlcIdSet.find(dk.dlcId) == ownedDlcIdSet.end())) {
+            if (dk.depotId != appId && (dk.dlcId == 0 || !ownedDlcIdSet.contains(dk.dlcId))) {
                 if (IsValidManifestId(dk.manifestId)) {
                     luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")\n";
                 }
@@ -1150,13 +1354,14 @@ bool WriteOutputs(uint32_t appId,
             }
 
             if (!dlc.name.empty()) {
-                std::string cleanName = dlc.name;
-                for (char& c : cleanName) {
-                    if (c == '\r' || c == '\n') c = ' ';
-                }
-                luaText += " -- " + cleanName;
+                luaText += " -- " + SanitizeComment(dlc.name);
             }
             luaText += "\n";
+
+            auto dlcTokIt = appTokens.find(dlc.dlcId);
+            if (dlcTokIt != appTokens.end() && dlcTokIt->second != 0) {
+                luaText += "addtoken(" + std::to_string(dlc.dlcId) + ", \"" + std::to_string(dlcTokIt->second) + "\")\n";
+            }
 
             // Any subdepots of this DLC with keys
             for (const auto& dk : depotKeys) {
@@ -1188,11 +1393,7 @@ bool WriteOutputs(uint32_t appId,
                     if (dk.depotId == dlc.dlcId && IsValidManifestId(dk.manifestId)) {
                         luaText += "setManifestid(" + std::to_string(dk.depotId) + ", \"" + dk.manifestId + "\")";
                         if (!dlc.name.empty()) {
-                            std::string cleanName = dlc.name;
-                            for (char& c : cleanName) {
-                                if (c == '\r' || c == '\n') c = ' ';
-                            }
-                            luaText += " -- " + cleanName;
+                            luaText += " -- " + SanitizeComment(dlc.name);
                         }
                         luaText += "\n";
                         break;
@@ -1280,6 +1481,18 @@ bool WriteOutputs(uint32_t appId,
         std::cout << "[INFO] 未在 depotcache 中找到缓存的清单文件 (.manifest) / No cached .manifest files found in depotcache for AppID " << appId << ".\n";
     }
 
+    if (!relevantTokens.empty()) {
+        std::cout << "[INFO] 已提取 " << relevantTokens.size() << " 个访问令牌 (AccessToken) / Extracted "
+                  << relevantTokens.size() << " access token(s):\n";
+        for (const auto& [tId, tVal] : relevantTokens) {
+            std::cout << "       AppID " << tId << ": " << tVal << "\n";
+        }
+    } else {
+        std::cout << "[INFO] 未在 appinfo.vdf 中找到非零访问令牌 (该游戏可能无需 Access Token) / "
+                  << "No non-zero access token found in appinfo.vdf for AppID " << appId
+                  << " (this game may not require an access token).\n";
+    }
+
     std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath << "\n";
     return ok;
 }
@@ -1314,21 +1527,26 @@ int Run(int argc, char** argv) {
     SetEnvironmentVariableA("SteamGameId", appIdStr.c_str());
     SetEnvironmentVariableA("SteamOverlayGameId", appIdStr.c_str());
 
+    auto steamPathOpt{FindSteamInstallPath()};
+    std::string steamPath = steamPathOpt ? *steamPathOpt : "";
+
     std::string steamClientPath;
-    HMODULE steamClient{LoadSteamClient64(steamClientPath)};
+    HMODULE steamClient{LoadSteamClient64(steamPath, steamClientPath)};
     ISteamClient* client{steamClient ? CreateSteamClient(steamClient) : nullptr};
 
     HSteamPipe pipe{0};
     HSteamUser user{0};
     const bool sessionOpened = (client != nullptr) && OpenSession(client, pipe, user);
 
+    SteamSessionGuard sessionGuard{sessionOpened ? client : nullptr, pipe, steamClient};
+
     if (!sessionOpened) {
         std::cout << "[WARN] Steam 未运行或未登录，已自动切换为【离线降级模式】。\n"
                   << "       Steam is not running or not logged in; switched to [Offline Degradation Mode].\n"
                   << "[INFO] 跳过在线凭证与授权：AppTicket、ETicket 及实时 DLC 状态将不可用。\n"
                   << "       Skipped live credentials: AppTicket, ETicket, and live DLC query are unavailable.\n"
-                  << "[INFO] 继续扫描本地磁盘：正在提取本地缓存的 Depot 密钥、ACF 配置与清单文件...\n"
-                  << "       Continuing local scan: extracting cached depot keys, ACF configs, and manifest files...\n\n";
+                  << "[INFO] 继续扫描本地磁盘：正在提取本地缓存的 Depot 密钥、ACF 配置、清单文件与访问令牌 (Token)...\n"
+                  << "       Continuing local scan: extracting cached depot keys, ACF configs, manifest files, and access tokens (Token)...\n\n";
     } else {
         std::cout << "Loaded " << steamClientPath << "\n";
         if (auto* utils{client->GetISteamUtils(pipe, kSteamUtilsInterfaceVersion)}) {
@@ -1347,20 +1565,21 @@ int Run(int argc, char** argv) {
         if (encrypted) PrintHex("Encrypted ticket", *encrypted);
     }
 
-    auto steamPathOpt{FindSteamInstallPath()};
-    std::string steamPath = steamPathOpt ? *steamPathOpt : "";
     std::vector<DlcInfo> dlcs;
     std::vector<DepotKeyInfo> depotKeys = ExtractDepotDecryptionKeys(
         steamPath, *appId, sessionOpened ? client : nullptr, pipe, user, dlcs);
 
-    const bool ok{WriteOutputs(*appId, ownership, encrypted, depotKeys, dlcs)};
+    std::unordered_map<uint32_t, uint64_t> appTokens;
+    if (!steamPath.empty()) {
+        std::unordered_set<uint32_t> targetAppIds;
+        targetAppIds.insert(*appId);
+        for (const auto& dlc : dlcs) {
+            targetAppIds.insert(dlc.dlcId);
+        }
+        appTokens = ParseAppInfoTokens(steamPath, &targetAppIds);
+    }
 
-    if (sessionOpened && client) {
-        client->BReleaseSteamPipe(pipe);
-    }
-    if (steamClient) {
-        FreeLibrary(steamClient);
-    }
+    const bool ok{WriteOutputs(*appId, ownership, encrypted, depotKeys, dlcs, appTokens)};
     return ok ? 0 : 1;
 }
 #endif

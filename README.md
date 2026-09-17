@@ -63,7 +63,7 @@
 
 ### Extracting Tickets & Config with `extract_tickets`
 
-The `extract_tickets` tool extracts authorization tickets (`AppTicket` / `ETicket`), owned DLCs, and cached manifest files (`*.manifest`) for games you own, generating a ready-to-use `<appid>.lua` config.
+The `extract_tickets` tool extracts authorization tickets (`AppTicket` / `ETicket`), owned DLCs, PICS access tokens (`AccessToken`), and cached manifest files (`*.manifest`) for games you own, generating a ready-to-use `<appid>.lua` config.
 
 * **Download**: Available from the [GitHub Actions Tools Workflow](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml).
 * **Usage**:
@@ -72,7 +72,7 @@ The `extract_tickets` tool extracts authorization tickets (`AppTicket` / `ETicke
   extract_tickets.exe 1361510
   ```
 * **Output** (saved in the `<appid>/` directory):
-  * `<appid>.lua` — Complete, ready-to-use config (including AppId, owned DLCs, depot keys, pinned manifests via `setManifestid`, and tickets). Copy directly to `config/lua/`.
+  * `<appid>.lua` — Complete, ready-to-use config (including AppId, owned DLCs, access tokens via `addtoken`, depot keys, pinned manifests via `setManifestid`, and tickets). Copy directly to `config/lua/`.
   * `*.manifest` — Cached depot manifest files automatically extracted for your game and DLCs.
   * `appticket.bin` / `eticket.bin` — Raw authorization tickets.
 

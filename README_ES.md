@@ -59,7 +59,7 @@
 
 ### Extracción de tickets y configuración con `extract_tickets`
 
-La herramienta `extract_tickets` extrae tickets de autorización (`AppTicket` / `ETicket`), DLCs en posesión y archivos de manifiesto en caché (`*.manifest`) de los juegos que posees, generando una configuración `<appid>.lua` lista para usar.
+La herramienta `extract_tickets` extrae tickets de autorización (`AppTicket` / `ETicket`), DLCs en posesión, tokens de acceso PICS (`AccessToken`) y archivos de manifiesto en caché (`*.manifest`) de los juegos que posees, generando una configuración `<appid>.lua` lista para usar.
 
 * **Descarga**: Disponible en el [flujo de trabajo de GitHub Actions Tools](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml).
 * **Uso**:
@@ -68,7 +68,7 @@ La herramienta `extract_tickets` extrae tickets de autorización (`AppTicket` / 
   extract_tickets.exe 1361510
   ```
 * **Salida** (guardada en la carpeta `<appid>/`):
-  * `<appid>.lua` — Configuración completa y lista para usar (incluye AppId, DLCs en posesión, claves de depot, manifiestos fijados con `setManifestid` y tickets). Cópiala directamente a `config/lua/`.
+  * `<appid>.lua` — Configuración completa y lista para usar (incluye AppId, DLCs en posesión, tokens de acceso mediante `addtoken`, claves de depot, manifiestos fijados con `setManifestid` y tickets). Cópiala directamente a `config/lua/`.
   * `*.manifest` — Archivos de manifiesto de depot en caché extraídos automáticamente para tu juego y DLCs.
   * `appticket.bin` / `eticket.bin` — Tickets de autorización brutos.
 
