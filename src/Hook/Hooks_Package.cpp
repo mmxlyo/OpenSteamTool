@@ -1,6 +1,7 @@
 #include "Hooks_Package.h"
 #include "HookMacros.h"
 #include "Hooks_SteamUI.h"
+#include "Hooks_Misc.h"
 #include "dllmain.h"
 #include "Utils/HookSupport/VehCommon.h"
 
@@ -116,14 +117,17 @@ namespace {
                     LuaConfig::MarkOwned(appId);
                     pOwn->ReleaseState = EAppReleaseState::Released;
                 } else {
-                    pOwn->PackageId       = kInjectedPackageId;
-                    pOwn->ReleaseState    = EAppReleaseState::Released;
-                    pOwn->bOwnsLicense    = true; // This forces DLCs and enables decoupled family shared games
-                    pOwn->bFreeLicense    = false;
-                    pOwn->bFamilyShared   = false;
-                    pOwn->bBorrowed       = false;
-                    pOwn->bLicenseLocked  = false;
-                    pOwn->SteamId32       = 0;
+                    pOwn->PackageId         = kInjectedPackageId;
+                    pOwn->ReleaseState      = EAppReleaseState::Released;
+                    pOwn->bOwnsLicense      = true; // This forces DLCs and enables decoupled family shared games
+                    pOwn->bFreeLicense      = false;
+                    pOwn->bFamilyShared     = false;
+                    pOwn->bBorrowed         = false;
+                    pOwn->bLicenseLocked    = false;
+                    pOwn->bIsPermanent      = true;
+                    pOwn->bLicensePermanent = true;
+                    const AccountID_t activeId = Hooks_Misc::GetActiveAccountID();
+                    pOwn->SteamId32         = activeId ? activeId : 0;
                     return true;
                 }
             } else {
@@ -192,6 +196,7 @@ namespace Hooks_Package {
             // ── Add depots that are newly loaded ──
             LOG_PACKAGE_DEBUG("NotifyLicenseChanged: processing {} additions", additions.size());
             if (!additions.empty()) {
+                addedIds.reserve(additions.size());
                 uint32_t oldSize = pPkg->AppIdVec.m_Size;
                 if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, static_cast<int>(additions.size()))) {
                     // An applied addition invalidates any UI removal that has not

@@ -356,6 +356,12 @@ struct CSteamID
 	void SetAccountID( uint32 unAccountID )		{ m_steamid.m_comp.m_unAccountID = unAccountID; }
 	AccountID_t GetAccountID() const			{ return m_steamid.m_comp.m_unAccountID; }
 
+	bool IsValid() const
+	{
+		return ( m_steamid.m_comp.m_EAccountType > k_EAccountTypeInvalid && m_steamid.m_comp.m_EAccountType < k_EAccountTypeMax ) 
+			&& ( m_steamid.m_comp.m_EUniverse > k_EUniverseInvalid && m_steamid.m_comp.m_EUniverse < k_EUniverseMax );
+	}
+
 	friend std::ostream& operator<<(std::ostream& os, const CSteamID& steamId){
 		return os << steamId.ConvertToUint64();
 	}

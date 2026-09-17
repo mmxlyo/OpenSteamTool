@@ -36,4 +36,8 @@ namespace Hooks_Misc {
     // Get localized game name via GetAppDataFromAppInfo (cached).
     std::string GetGameNameByAppID(AppId_t appId);
 
+    // Active user AccountID resolution (in-memory IPC event + registry/userdata discovery).
+    AccountID_t GetActiveAccountID();
+    void SetActiveAccountID(AccountID_t accountId);
+
 }

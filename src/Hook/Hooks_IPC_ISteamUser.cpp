@@ -26,9 +26,16 @@ namespace {
     // [Post-Handler]: IClientUser::GetSteamID
     void HandlerPost_IClientUser_GetSteamID(CPipeClient* pipe,CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
+        GetSteamIDResp resp{pWrite};
+        if (resp.ok()) {
+            CSteamID originalSteamId = resp.returnValue();
+            if (originalSteamId.IsValid() && originalSteamId.GetAccountID() != 0) {
+                Hooks_Misc::SetActiveAccountID(originalSteamId.GetAccountID());
+            }
+        }
+
         AppId_t appId = Hooks_Misc::ResolveAppId();
         if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
-        GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
 
         // Spoof whenever we have a pool-account ticket for this app, not just

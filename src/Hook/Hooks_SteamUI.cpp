@@ -1,4 +1,5 @@
 #include "Hooks_SteamUI.h"
+#include "Hooks_Misc.h"
 #include "HookManager.h"
 #include "HookMacros.h"
 #include "dllmain.h"
@@ -206,6 +207,18 @@ namespace
     {
         if (pApp && LuaConfig::HasDepot(pApp->nAppID, false))
         {
+            const AccountID_t activeId = Hooks_Misc::GetActiveAccountID();
+            if (activeId != 0 && pApp->SteamID.GetAccountID() != activeId)
+            {
+                pApp->SteamID.Set(activeId, k_EUniversePublic, k_EAccountTypeIndividual);
+            }
+
+            pApp->OwnershipFlags = static_cast<EAppOwnershipFlags>(
+                (pApp->OwnershipFlags & ~k_EAppOwnershipFlags_SharedLicense) |
+                k_EAppOwnershipFlags_OwnsLicense |
+                k_EAppOwnershipFlags_LicensePermanent
+            );
+
             uint32_t t = LuaConfig::GetPurchaseTime(pApp->nAppID);
             if (t)
             {
@@ -323,7 +336,7 @@ namespace Hooks_SteamUI
     void QueueRemoval(AppId_t appId)
     {
         std::lock_guard<std::mutex> lock(g_removalMutex);
-        if (std::find(g_pendingRemovals.begin(), g_pendingRemovals.end(), appId) == g_pendingRemovals.end()) {
+        if (std::ranges::find(g_pendingRemovals, appId) == g_pendingRemovals.end()) {
             g_pendingRemovals.push_back(appId);
         }
     }
