@@ -57,6 +57,16 @@ namespace LuaConfig{
     static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileCredentials;
     static std::unordered_map<AppId_t, uint32_t> g_credentialRefCount;
     static std::unordered_map<std::string, std::unordered_map<uint64_t, ManifestOverride>> g_fileManifestOverrides;
+    static std::unordered_map<std::string, std::unordered_map<AppId_t, uint64_t>> g_fileTokens;
+    static std::unordered_map<std::string, std::unordered_map<std::string, AppId_t>> g_fileProcesses;
+    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileForcedDenuvo;
+    static std::unordered_map<AppId_t, uint32_t> g_forcedDenuvoRefCount;
+    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileNoDenuvo;
+    static std::unordered_map<AppId_t, uint32_t> g_noDenuvoRefCount;
+    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_filePinnedApps;
+    static std::unordered_map<AppId_t, uint32_t> g_pinnedAppsRefCount;
+    static std::unordered_map<std::string, std::unordered_map<AppId_t, uint64_t>> g_fileStats;
+    static std::unordered_map<std::string, std::string> g_fileEticketUrl;
     static std::unordered_map<std::string, uint64_t> g_fileParseSequence;
     static uint64_t g_nextFileParseSequence = 0;
     // Reference count: how many files provide each depot.
@@ -131,6 +141,101 @@ namespace LuaConfig{
             SetActiveManifestOverride(depotId, *best);
         } else {
             ClearActiveManifestOverride(depotId);
+        }
+    }
+
+    static void RebuildAccessToken(AppId_t appId) {
+        const uint64_t* best = nullptr;
+        uint64_t bestSeq = 0;
+
+        for (const auto& [file, tokens] : g_fileTokens) {
+            auto it = tokens.find(appId);
+            if (it == tokens.end()) continue;
+
+            auto seqIt = g_fileParseSequence.find(file);
+            if (seqIt == g_fileParseSequence.end()) continue;
+
+            if (!best || seqIt->second > bestSeq) {
+                best = &it->second;
+                bestSeq = seqIt->second;
+            }
+        }
+
+        if (best) {
+            AccessTokenSet[appId] = *best;
+        } else {
+            AccessTokenSet.erase(appId);
+        }
+    }
+
+    static void RebuildProcess(const std::string& procName) {
+        const AppId_t* best = nullptr;
+        uint64_t bestSeq = 0;
+
+        for (const auto& [file, procs] : g_fileProcesses) {
+            auto it = procs.find(procName);
+            if (it == procs.end()) continue;
+
+            auto seqIt = g_fileParseSequence.find(file);
+            if (seqIt == g_fileParseSequence.end()) continue;
+
+            if (!best || seqIt->second > bestSeq) {
+                best = &it->second;
+                bestSeq = seqIt->second;
+            }
+        }
+
+        if (best) {
+            ProcessNameAppIdMap[procName] = *best;
+        } else {
+            ProcessNameAppIdMap.erase(procName);
+        }
+    }
+
+    static void RebuildStatSteamId(AppId_t appId) {
+        const uint64_t* best = nullptr;
+        uint64_t bestSeq = 0;
+
+        for (const auto& [file, stats] : g_fileStats) {
+            auto it = stats.find(appId);
+            if (it == stats.end()) continue;
+
+            auto seqIt = g_fileParseSequence.find(file);
+            if (seqIt == g_fileParseSequence.end()) continue;
+
+            if (!best || seqIt->second > bestSeq) {
+                best = &it->second;
+                bestSeq = seqIt->second;
+            }
+        }
+
+        if (best) {
+            StatSteamIdSet[appId] = *best;
+        } else {
+            StatSteamIdSet.erase(appId);
+        }
+    }
+
+    static void RebuildEticketUrl() {
+        const std::string* best = nullptr;
+        uint64_t bestSeq = 0;
+
+        for (const auto& [file, url] : g_fileEticketUrl) {
+            if (url.empty()) continue;
+
+            auto seqIt = g_fileParseSequence.find(file);
+            if (seqIt == g_fileParseSequence.end()) continue;
+
+            if (!best || seqIt->second > bestSeq) {
+                best = &url;
+                bestSeq = seqIt->second;
+            }
+        }
+
+        if (best) {
+            EticketUrl = *best;
+        } else {
+            EticketUrl.clear();
         }
     }
 
@@ -300,7 +405,12 @@ namespace LuaConfig{
             if (!ParseUInt64Decimal(token, &parsedToken)) {
                 return luaL_error(L, "");
             }
-            AccessTokenSet[AppId] = parsedToken;
+            if (!g_currentFile.empty()) {
+                g_fileTokens[g_currentFile][AppId] = parsedToken;
+                RebuildAccessToken(AppId);
+            } else {
+                AccessTokenSet[AppId] = parsedToken;
+            }
         }
 
         return 0;
@@ -319,7 +429,13 @@ namespace LuaConfig{
         std::string name(lua_tostring(L, 2));
         for (char& ch : name)
             ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        ProcessNameAppIdMap[name] = static_cast<AppId_t>(value);
+        AppId_t appId = static_cast<AppId_t>(value);
+        if (!g_currentFile.empty()) {
+            g_fileProcesses[g_currentFile][name] = appId;
+            RebuildProcess(name);
+        } else {
+            ProcessNameAppIdMap[name] = appId;
+        }
         return 0;
     }
 
@@ -330,7 +446,16 @@ namespace LuaConfig{
         lua_Integer value = lua_tointeger(L, 1);
         if (value <= 0 || value > static_cast<lua_Integer>(UINT32_MAX))
             return luaL_error(L, "forcedenuvo: appid out of range");
-        ForcedDenuvoSet.insert(static_cast<AppId_t>(value));
+        AppId_t appId = static_cast<AppId_t>(value);
+        if (!g_currentFile.empty()) {
+            if (g_fileForcedDenuvo[g_currentFile].insert(appId).second) {
+                if (++g_forcedDenuvoRefCount[appId] == 1) {
+                    ForcedDenuvoSet.insert(appId);
+                }
+            }
+        } else {
+            ForcedDenuvoSet.insert(appId);
+        }
         return 0;
     }
 
@@ -341,7 +466,16 @@ namespace LuaConfig{
         lua_Integer value = lua_tointeger(L, 1);
         if (value <= 0 || value > static_cast<lua_Integer>(UINT32_MAX))
             return luaL_error(L, "nodenuvo: appid out of range");
-        NoDenuvoSet.insert(static_cast<AppId_t>(value));
+        AppId_t appId = static_cast<AppId_t>(value);
+        if (!g_currentFile.empty()) {
+            if (g_fileNoDenuvo[g_currentFile].insert(appId).second) {
+                if (++g_noDenuvoRefCount[appId] == 1) {
+                    NoDenuvoSet.insert(appId);
+                }
+            }
+        } else {
+            NoDenuvoSet.insert(appId);
+        }
         return 0;
     }
 
@@ -351,7 +485,13 @@ namespace LuaConfig{
         // strict Denuvo titles. Set to "" (or omit the call) to disable.
         if (lua_gettop(L) < 1 || !lua_isstring(L, 1))
             return luaL_error(L, "seteticketurl requires (url: string)");
-        EticketUrl = std::string(lua_tostring(L, 1));
+        std::string url(lua_tostring(L, 1));
+        if (!g_currentFile.empty()) {
+            g_fileEticketUrl[g_currentFile] = url;
+            RebuildEticketUrl();
+        } else {
+            EticketUrl = url;
+        }
         return 0;
     }
 
@@ -373,7 +513,15 @@ namespace LuaConfig{
             return luaL_error(L, "");
         AppId_t AppId = (uint32_t)value;
 
-        PinnedApps.insert(AppId);
+        if (!g_currentFile.empty()) {
+            if (g_filePinnedApps[g_currentFile].insert(AppId).second) {
+                if (++g_pinnedAppsRefCount[AppId] == 1) {
+                    PinnedApps.insert(AppId);
+                }
+            }
+        } else {
+            PinnedApps.insert(AppId);
+        }
 
         return 0;
     }
@@ -495,7 +643,12 @@ namespace LuaConfig{
         if (!ParseUInt64Decimal(sidStr, &steamId))
             return luaL_error(L, "setStat: steamId must be all digits");
 
-        StatSteamIdSet[appId] = steamId;
+        if (!g_currentFile.empty()) {
+            g_fileStats[g_currentFile][appId] = steamId;
+            RebuildStatSteamId(appId);
+        } else {
+            StatSteamIdSet[appId] = steamId;
+        }
         return 0;
     }
 
@@ -775,7 +928,23 @@ namespace LuaConfig{
         auto depotsIt = g_fileDepots.find(filePath);
         auto manifestIt = g_fileManifestOverrides.find(filePath);
         auto credIt = g_fileCredentials.find(filePath);
-        if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end() && credIt == g_fileCredentials.end()) return;
+        auto tokenIt = g_fileTokens.find(filePath);
+        auto procIt = g_fileProcesses.find(filePath);
+        auto forcedIt = g_fileForcedDenuvo.find(filePath);
+        auto noDenuvoIt = g_fileNoDenuvo.find(filePath);
+        auto pinnedIt = g_filePinnedApps.find(filePath);
+        auto statIt = g_fileStats.find(filePath);
+        auto eticketUrlIt = g_fileEticketUrl.find(filePath);
+
+        if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end() &&
+            credIt == g_fileCredentials.end() && tokenIt == g_fileTokens.end() &&
+            procIt == g_fileProcesses.end() && forcedIt == g_fileForcedDenuvo.end() &&
+            noDenuvoIt == g_fileNoDenuvo.end() && pinnedIt == g_filePinnedApps.end() &&
+            statIt == g_fileStats.end() && eticketUrlIt == g_fileEticketUrl.end()) {
+            g_fileParseSequence.erase(filePath);
+            g_fileMtime.erase(filePath);
+            return;
+        }
 
         if (depotsIt != g_fileDepots.end()) {
             for (AppId_t id : depotsIt->second) {
@@ -825,6 +994,86 @@ namespace LuaConfig{
             LOG_MANIFEST_INFO("UnloadFile: removed {} manifest override(s) from {}", affectedDepots.size(), filePath);
         }
 
+        if (tokenIt != g_fileTokens.end()) {
+            std::vector<AppId_t> affectedTokens;
+            affectedTokens.reserve(tokenIt->second.size());
+            for (const auto& [appId, _] : tokenIt->second) {
+                affectedTokens.push_back(appId);
+            }
+            g_fileTokens.erase(tokenIt);
+            for (AppId_t appId : affectedTokens) {
+                RebuildAccessToken(appId);
+            }
+        }
+
+        if (procIt != g_fileProcesses.end()) {
+            std::vector<std::string> affectedProcs;
+            affectedProcs.reserve(procIt->second.size());
+            for (const auto& [procName, _] : procIt->second) {
+                affectedProcs.push_back(procName);
+            }
+            g_fileProcesses.erase(procIt);
+            for (const auto& procName : affectedProcs) {
+                RebuildProcess(procName);
+            }
+        }
+
+        if (forcedIt != g_fileForcedDenuvo.end()) {
+            for (AppId_t appId : forcedIt->second) {
+                auto refIt = g_forcedDenuvoRefCount.find(appId);
+                if (refIt != g_forcedDenuvoRefCount.end()) {
+                    if (--refIt->second == 0) {
+                        g_forcedDenuvoRefCount.erase(refIt);
+                        ForcedDenuvoSet.erase(appId);
+                    }
+                }
+            }
+            g_fileForcedDenuvo.erase(forcedIt);
+        }
+
+        if (noDenuvoIt != g_fileNoDenuvo.end()) {
+            for (AppId_t appId : noDenuvoIt->second) {
+                auto refIt = g_noDenuvoRefCount.find(appId);
+                if (refIt != g_noDenuvoRefCount.end()) {
+                    if (--refIt->second == 0) {
+                        g_noDenuvoRefCount.erase(refIt);
+                        NoDenuvoSet.erase(appId);
+                    }
+                }
+            }
+            g_fileNoDenuvo.erase(noDenuvoIt);
+        }
+
+        if (pinnedIt != g_filePinnedApps.end()) {
+            for (AppId_t appId : pinnedIt->second) {
+                auto refIt = g_pinnedAppsRefCount.find(appId);
+                if (refIt != g_pinnedAppsRefCount.end()) {
+                    if (--refIt->second == 0) {
+                        g_pinnedAppsRefCount.erase(refIt);
+                        PinnedApps.erase(appId);
+                    }
+                }
+            }
+            g_filePinnedApps.erase(pinnedIt);
+        }
+
+        if (statIt != g_fileStats.end()) {
+            std::vector<AppId_t> affectedStats;
+            affectedStats.reserve(statIt->second.size());
+            for (const auto& [appId, _] : statIt->second) {
+                affectedStats.push_back(appId);
+            }
+            g_fileStats.erase(statIt);
+            for (AppId_t appId : affectedStats) {
+                RebuildStatSteamId(appId);
+            }
+        }
+
+        if (eticketUrlIt != g_fileEticketUrl.end()) {
+            g_fileEticketUrl.erase(eticketUrlIt);
+            RebuildEticketUrl();
+        }
+
         g_fileParseSequence.erase(filePath);
         g_fileMtime.erase(filePath);
     }
@@ -864,6 +1113,41 @@ namespace LuaConfig{
             }
         }
         for (const auto& [filePath, _] : g_fileCredentials) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileTokens) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileProcesses) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileForcedDenuvo) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileNoDenuvo) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_filePinnedApps) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileStats) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileEticketUrl) {
             if (StartsWithCaseInsensitive(filePath, dirPath)) {
                 toUnload.push_back(filePath);
             }
@@ -1241,6 +1525,27 @@ namespace LuaConfig{
                 rememberTracked(filePath);
             }
             for (const auto& [filePath, _] : g_fileCredentials) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileTokens) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileProcesses) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileForcedDenuvo) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileNoDenuvo) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_filePinnedApps) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileStats) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileEticketUrl) {
                 rememberTracked(filePath);
             }
             for (const auto& [filePath, _] : g_fileParseSequence) {

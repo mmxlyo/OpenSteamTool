@@ -17,6 +17,9 @@ void RecordEncryptedTicket(SteamAPICall_t call, AppId_t appID)
     if (call == k_uAPICallInvalid || appID == k_uAppIdInvalid) return;
 
     std::scoped_lock lock(g_mutex);
+    if (g_encryptedTickets.size() >= 256) {
+        g_encryptedTickets.clear();
+    }
     g_encryptedTickets[call] = appID;
 }
 

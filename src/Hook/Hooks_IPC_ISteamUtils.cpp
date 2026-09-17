@@ -11,10 +11,23 @@ namespace {
     using namespace IPCMessages::IClientUtils;
 
     template <class CallbackT>
-    bool WriteAPICallResult(CUtlBuffer* pWrite,uint32 callbackCapacity,const CallbackT& callback)
+    bool WriteAPICallResult(CUtlBuffer* pWrite, uint32 callbackCapacity, const CallbackT& callback)
     {
         static_assert(std::is_trivially_copyable_v<CallbackT>);
         if (callbackCapacity < sizeof(CallbackT)) return false;
+
+        // Ensure pWrite has sufficient allocated memory and advance m_Put so that
+        // GetAPICallResultResp's Fits(body(), minimumBodySize()) check succeeds even when
+        // steamclient originally returned false with a minimal failure response.
+        const uint32 requiredCapacity = static_cast<uint32>(sizeof(uint32))   // EIPCResult
+                                      + static_cast<uint32>(sizeof(bool))     // returnValue
+                                      + callbackCapacity                      // pCallback
+                                      + static_cast<uint32>(sizeof(bool));    // pbFailed
+        if (pWrite && pWrite->m_Put < static_cast<int>(requiredCapacity)) {
+            if (!Hooks_Misc::EnsureBufferCapacity(pWrite, requiredCapacity, true)) {
+                return false;
+            }
+        }
 
         GetAPICallResultResp resp{pWrite, callbackCapacity};
         if (!resp.ok()) return false;

@@ -80,6 +80,16 @@ namespace {
             return;
         }
 
+        const uint32 requiredCapacity = static_cast<uint32>(sizeof(uint32))           // EIPCResult
+                                      + static_cast<uint32>(sizeof(uint32))           // returnValue
+                                      + static_cast<uint32>(req.cbMaxTicket())        // pTicket
+                                      + static_cast<uint32>(sizeof(uint32) * 4);      // piAppId, piSteamId, piSignature, pcbSignature
+        if (pWrite && pWrite->m_Put < static_cast<int>(requiredCapacity)) {
+            if (!Hooks_Misc::EnsureBufferCapacity(pWrite, requiredCapacity, true)) {
+                return;
+            }
+        }
+
         GetAppOwnershipTicketExtendedDataResp resp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
         if (!resp.ok()) return;
 
@@ -176,10 +186,15 @@ namespace {
         LOG_IPC_DEBUG("GetEncryptedAppTicket: AppId={} serving source={}", appId, fromFresh ? "fresh" : "store");
 
         uint32 ticketSize = static_cast<uint32>(ticket.size());
-        uint32 newCapacity = pWrite->Capacity() + ticketSize;
-        if (!Hooks_Misc::EnsureBufferCapacity(pWrite, newCapacity,true)) {
-            LOG_IPC_DEBUG("GetEncryptedAppTicket: AppId={} - failed to ensure buffer size", appId);
-            return;
+        const uint32 requiredCapacity = static_cast<uint32>(sizeof(uint32))   // EIPCResult
+                                      + static_cast<uint32>(sizeof(bool))     // returnValue
+                                      + static_cast<uint32>(sizeof(uint32))   // pcbTicket
+                                      + ticketSize;                           // pTicket
+        if (pWrite && pWrite->m_Put < static_cast<int>(requiredCapacity)) {
+            if (!Hooks_Misc::EnsureBufferCapacity(pWrite, requiredCapacity, true)) {
+                LOG_IPC_DEBUG("GetEncryptedAppTicket: AppId={} - failed to ensure buffer size", appId);
+                return;
+            }
         }
 
         GetEncryptedAppTicketResp resp{pWrite};

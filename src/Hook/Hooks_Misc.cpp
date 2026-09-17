@@ -188,6 +188,9 @@ namespace Hooks_Misc {
         // Only cache valid non-empty names so uninitialized/early calls don't poison the cache
         if (!name.empty()) {
             std::scoped_lock lock(g_GameNameMutex);
+            if (g_GameNameCache.size() >= 512) {
+                g_GameNameCache.clear();
+            }
             g_GameNameCache.emplace(appId, name);
         }
         return name;

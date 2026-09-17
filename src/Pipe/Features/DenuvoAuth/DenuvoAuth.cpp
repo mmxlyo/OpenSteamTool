@@ -5,6 +5,7 @@
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Config/LuaConfig.h"
 #include "OSTPlatform/include/SteamCredentialStore.h"
+#include "Pipe/ProcessInspector.h"
 
 #include <cwctype>
 #include <mutex>
@@ -152,26 +153,6 @@ namespace {
         return authIt == g_processAuth.end() ? nullptr : &authIt->second;
     }
 
-    void EnsureScanned(ProcessAuth& auth, const ProcessKey& process, AppId_t appId) {
-        if (auth.scanned) {
-            LOG_PIPE_TRACE("DenuvoAuth: reusing cached protection result {} denuvo={}",
-                           process.DebugString(), auth.denuvo);
-            return;
-        }
-
-        auth.scanned = true;
-        if (LuaConfig::IsNoDenuvo(appId)) {
-            auth.denuvo = false;
-            LOG_PIPE_INFO("DenuvoAuth: nodenuvo appid={} — skipping ProtectionScan and forcing non-Denuvo", appId);
-        } else if (LuaConfig::IsForcedDenuvo(appId)) {
-            auth.denuvo = true;
-            LOG_PIPE_INFO("DenuvoAuth: forcedenuvo appid={} — skipping ProtectionScan", appId);
-        } else {
-            auth.denuvo = ScanProtection(process.pid).denuvoDetected;
-        }
-        if (!auth.denuvo) auth.stage = Stage::None;
-    }
-
 } // namespace
 
 void Apply(const PipeContext& ctx) {
@@ -180,11 +161,58 @@ void Apply(const PipeContext& ctx) {
     const PipeKey pipeKey = MakePipeKey(ctx.pipe);
     if (!pipeKey.IsValid()) return;
 
+    bool needsScan = false;
+    {
+        std::lock_guard lock(g_authMutex);
+        auto it = g_processAuth.find(ctx.process);
+        if (it == g_processAuth.end() || !it->second.scanned) {
+            needsScan = true;
+        }
+    }
+
+    bool denuvo = false;
+    if (needsScan) {
+        if (LuaConfig::IsNoDenuvo(ctx.appId)) {
+            denuvo = false;
+            LOG_PIPE_INFO("DenuvoAuth: nodenuvo appid={} — skipping ProtectionScan and forcing non-Denuvo", ctx.appId);
+        } else if (LuaConfig::IsForcedDenuvo(ctx.appId)) {
+            denuvo = true;
+            LOG_PIPE_INFO("DenuvoAuth: forcedenuvo appid={} — skipping ProtectionScan", ctx.appId);
+        } else {
+            denuvo = ScanProtection(ctx.process.pid).denuvoDetected;
+        }
+    }
+
     std::lock_guard lock(g_authMutex);
+    if (g_processAuth.size() >= 256) {
+        std::erase_if(g_processAuth, [&](const auto& pair) {
+            if (pair.first == ctx.process) return false;
+            auto currentCreation = ProcessInspector::GetProcessCreationTime(pair.first.pid);
+            return !currentCreation || *currentCreation != pair.first.creationTime;
+        });
+        std::erase_if(g_pipeProcess, [&](const auto& pair) {
+            return !g_processAuth.contains(pair.second);
+        });
+    }
+    if (g_pipeProcess.size() >= 512) {
+        std::erase_if(g_pipeProcess, [&](const auto& pair) {
+            if (pair.second == ctx.process) return false;
+            return !g_processAuth.contains(pair.second);
+        });
+    }
+
     ProcessAuth& auth = g_processAuth[ctx.process];
     g_pipeProcess[pipeKey] = ctx.process;
 
-    EnsureScanned(auth, ctx.process, ctx.appId);
+    if (needsScan && !auth.scanned) {
+        auth.scanned = true;
+        auth.denuvo = denuvo;
+        if (!auth.denuvo) auth.stage = Stage::None;
+    } else {
+        LOG_PIPE_TRACE("DenuvoAuth: reusing cached protection result {} denuvo={}",
+                       ctx.process.DebugString(), auth.denuvo);
+    }
+
     auth.OnHandshake(ctx, pipeKey);
 }
 

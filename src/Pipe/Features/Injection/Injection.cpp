@@ -3,6 +3,7 @@
 #include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Process.h"
 #include "OSTPlatform/include/RemoteProcess.h"
+#include "Pipe/ProcessInspector.h"
 #include "Utils/Config/Config.h"
 #include "Utils/Logging/Log.h"
 
@@ -33,6 +34,13 @@ namespace {
 
     bool ClaimInjection(const InjectedKey& key) {
         std::scoped_lock lock(g_mutex);
+        if (g_injected.size() >= 256) {
+            std::erase_if(g_injected, [&](const InjectedKey& k) {
+                if (k.process == key.process) return false;
+                auto currentCreation = ProcessInspector::GetProcessCreationTime(k.process.pid);
+                return !currentCreation || *currentCreation != k.process.creationTime;
+            });
+        }
         return g_injected.insert(key).second;
     }
 

@@ -58,6 +58,13 @@ namespace {
         const ProcessKey processKey = MakeProcessKey(snapshot);
         if (processKey.IsValid()) {
             std::scoped_lock lock(g_processMutex);
+            if (g_processes.size() >= 256) {
+                std::erase_if(g_processes, [&](const auto& pair) {
+                    if (pair.first == processKey) return false;
+                    auto currentCreation = ProcessInspector::GetProcessCreationTime(pair.first.pid);
+                    return !currentCreation || *currentCreation != pair.first.creationTime;
+                });
+            }
             g_processes[processKey] = snapshot;
         }
         return snapshot;

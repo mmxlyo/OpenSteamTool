@@ -251,6 +251,9 @@ namespace Hooks_NetPacket_UserStats {
         if (hdr.ParseFromArray(pHdr, cbHdr) && hdr.has_jobid_source()) {
             uint64 jobId = hdr.jobid_source();
             std::lock_guard<std::mutex> lock(g_JobMutex);
+            if (g_JobIdToAppId.size() >= 256) {
+                g_JobIdToAppId.clear();
+            }
             g_JobIdToAppId[jobId] = appId;
             LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats request: stored jobid={} -> appid={}", jobId, appId);
         }
@@ -273,7 +276,6 @@ namespace Hooks_NetPacket_UserStats {
     void HandleRecv_GetUserStatsResponse(const uint8* pHdr, uint32 cbHdr,
                                     const uint8* pBody, uint32 cbBody)
     {
-        // Header: set eresult=OK
         CMsgProtoBufHeader hdrMsg;
         if (!hdrMsg.ParseFromArray(pHdr, cbHdr)){
             LOG_ACHIEVEMENT_WARN("Player::GetUserStats response: failed to ParseFromArray original header");
@@ -296,14 +298,14 @@ namespace Hooks_NetPacket_UserStats {
             }
         }
 
-        hdrMsg.set_eresult(static_cast<int32_t>(k_EResultOK));
-        g_cbNewHdr = static_cast<uint32>(hdrMsg.ByteSizeLong());
-        if (g_cbNewHdr > kMaxHdrSize || !hdrMsg.SerializeToArray(g_NewHdr, kMaxHdrSize))
+        // Guard: only modify header and strip stats if the app is managed by OST.
+        // If unmanaged, pass through untouched so we do not alter error codes for non-OST games.
+        if (!hasAppId || !LuaConfig::HasDepot(appId)) {
+            LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: no appid match, skip modification");
             return;
-        LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: modified header:\n{}", hdrMsg.DebugString());
-        g_NeedReplaceHdr = true;
+        }
 
-        // Body: strip stats (only if appid was matched and is in our config)
+        // Body: parse original response before marking modifications
         CPlayer_GetUserStats_Response resp;
         if (!resp.ParseFromArray(pBody, cbBody)){
             LOG_ACHIEVEMENT_WARN("Player::GetUserStats response: failed to ParseFromArray original response");
@@ -311,10 +313,10 @@ namespace Hooks_NetPacket_UserStats {
         }
         LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: original body:\n{}", resp.DebugString());
 
-        if (!hasAppId || !LuaConfig::HasDepot(appId)) {
-            LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: no appid match, skip body strip");
+        hdrMsg.set_eresult(static_cast<int32_t>(k_EResultOK));
+        g_cbNewHdr = static_cast<uint32>(hdrMsg.ByteSizeLong());
+        if (g_cbNewHdr > kMaxHdrSize || !hdrMsg.SerializeToArray(g_NewHdr, kMaxHdrSize))
             return;
-        }
 
         resp.clear_stats();
         g_NewBodySize = static_cast<uint32>(resp.ByteSizeLong());
@@ -323,6 +325,8 @@ namespace Hooks_NetPacket_UserStats {
             return;
         }
         g_ResizedInPlace = true;
+        LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: modified header:\n{}", hdrMsg.DebugString());
+        g_NeedReplaceHdr = true;
 
         LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: modified body:\n{}", resp.DebugString());
     }
@@ -598,6 +602,14 @@ namespace Hooks_NetPacket_Manifest {
 
         {
             std::lock_guard<std::mutex> lock(g_CodeMutex);
+            if (g_CodeFutures.size() >= 256) {
+                std::erase_if(g_CodeFutures, [](const auto& item) {
+                    return item.second.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+                });
+                if (g_CodeFutures.size() >= 256) {
+                    g_CodeFutures.clear();
+                }
+            }
             g_CodeFutures[jobId] = task.share();
         }
 
@@ -647,7 +659,6 @@ namespace Hooks_NetPacket_Manifest {
                     "g_cbNewHdr: {}, kMaxHdrSize: {}", g_cbNewHdr, kMaxHdrSize);
             return;
         }
-        g_NeedReplaceHdr = true;
 
         // Body: set manifest_request_code
         CContentServerDirectory_GetManifestRequestCode_Response resp;
@@ -659,6 +670,7 @@ namespace Hooks_NetPacket_Manifest {
                 "g_cbNewBody:{}, kMaxBodySize:{}", g_cbNewBody, kMaxBodySize);
             return;
         }
+        g_NeedReplaceHdr = true;
         g_NeedReplaceBody = true;
     }
 

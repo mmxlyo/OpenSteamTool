@@ -5,9 +5,9 @@
 #include "Utils/Logging/Log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <charconv>
-#include <mutex>
 #include <string_view>
 
 namespace ManifestClient {
@@ -66,34 +66,34 @@ namespace ManifestClient {
         Make("steamrun",      "https://manifest.steam.run/api/manifest/%llu",  ParseSteamRunJson),
     };
 
-    static const Provider* g_active = &kProviders[0];   // manifestdex
-    static std::mutex      g_mutex;
+    static std::atomic<const Provider*> g_active{&kProviders[0]};   // manifestdex
 
     bool SetProvider(std::string_view name) {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        for (const auto& p : kProviders)
+        for (const auto& p : kProviders) {
             if (p.name == name) { 
-                g_active = &p; 
+                g_active.store(&p, std::memory_order_release); 
                 return true; 
             }
+        }
         return false;
     }
 
     std::string_view ActiveProviderName() {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        return g_active->name; 
+        const auto* p = g_active.load(std::memory_order_acquire);
+        return p ? p->name : ""; 
     }
 
     // ── request ───────────────────────────────────────────────────
 
     void Shutdown() {
-        std::lock_guard<std::mutex> lock(g_mutex);
     }
 
     // ── fetch ─────────────────────────────────────────────────────
 
     static bool FetchActive(uint64_t gid, uint64_t* outCode) {
-        const Provider& p = *g_active;
+        const auto* active = g_active.load(std::memory_order_acquire);
+        if (!active) return false;
+        const Provider& p = *active;
         const Config::ManifestTimeouts timeouts = Config::GetManifestTimeouts();
 
         char urlLog[256];
@@ -121,8 +121,6 @@ namespace ManifestClient {
     bool FetchManifestRequestCode(uint64_t manifestGid, uint64_t* outRequestCode,
                                   AppId_t appId, AppId_t depotId)
     {
-        std::lock_guard<std::mutex> lock(g_mutex);
-
         if (appId && depotId && LuaConfig::HasManifestCodeFuncEx()) {
             if (LuaConfig::CallManifestFetchCodeEx(appId, depotId, manifestGid, outRequestCode)) {
                 LOG_MANIFEST_INFO("Manifest gid={} resolved via fetch_manifest_code_ex", manifestGid);

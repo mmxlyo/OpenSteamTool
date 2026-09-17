@@ -182,6 +182,9 @@ namespace {
             } else {
                 {
                     std::lock_guard<std::mutex> lock(g_mutex);
+                    if (g_noOwnerApps.size() >= 256) {
+                        g_noOwnerApps.clear();
+                    }
                     g_noOwnerApps.insert(appId);
                 }
                 LOG_IPC_DEBUG("EticketClient: appid={} no owning account in pool — skipping on-demand for this session",
@@ -218,6 +221,9 @@ namespace {
 
         {
             std::lock_guard<std::mutex> lock(g_mutex);
+            if (g_cache.size() >= 256) {
+                g_cache.clear();
+            }
             g_cache[appId] = fetched;
             out = fetched;
         }
