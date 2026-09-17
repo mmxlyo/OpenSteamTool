@@ -96,22 +96,71 @@ struct ScopedFileMappingView {
     explicit operator bool() const noexcept { return address != nullptr; }
 };
 
-// RAII guard for Steam client session and loaded module
+// RAII guard for Steam client session, loaded module, and process environment
 struct SteamSessionGuard {
     ISteamClient* client{nullptr};
     HSteamPipe pipe{0};
+    HSteamUser user{0};
     HMODULE module{nullptr};
 
-    ~SteamSessionGuard() {
-        if (client && pipe) {
-            client->BReleaseSteamPipe(pipe);
+    SteamSessionGuard() = default;
+    SteamSessionGuard(ISteamClient* c, HSteamPipe p, HSteamUser u, HMODULE m) noexcept
+        : client(c), pipe(p), user(u), module(m) {}
+
+    ~SteamSessionGuard() noexcept {
+        Reset();
+    }
+
+    SteamSessionGuard(const SteamSessionGuard&) = delete;
+    SteamSessionGuard& operator=(const SteamSessionGuard&) = delete;
+
+    SteamSessionGuard(SteamSessionGuard&& other) noexcept
+        : client(other.client), pipe(other.pipe), user(other.user), module(other.module) {
+        other.client = nullptr;
+        other.pipe = 0;
+        other.user = 0;
+        other.module = nullptr;
+    }
+
+    SteamSessionGuard& operator=(SteamSessionGuard&& other) noexcept {
+        if (this != &other) {
+            Reset();
+            client = other.client;
+            pipe = other.pipe;
+            user = other.user;
+            module = other.module;
+            other.client = nullptr;
+            other.pipe = 0;
+            other.user = 0;
+            other.module = nullptr;
+        }
+        return *this;
+    }
+
+    void Reset() noexcept {
+        if (client) {
+            if (pipe && user) {
+                client->ReleaseUser(pipe, user);
+                user = 0;
+            }
+            if (pipe) {
+                client->BReleaseSteamPipe(pipe);
+                pipe = 0;
+            }
+            client = nullptr;
         }
         if (module) {
             FreeLibrary(module);
+            module = nullptr;
             SetDllDirectoryA(nullptr);
         }
+        // Clear spoofed Steam environment variables
+        SetEnvironmentVariableA("SteamAppId", nullptr);
+        SetEnvironmentVariableA("SteamGameId", nullptr);
+        SetEnvironmentVariableA("SteamOverlayGameId", nullptr);
     }
 };
+
 
 // RAII wrapper for Windows FindFirstFile/FindNextFile HANDLE
 struct ScopedFindHandle {
@@ -1587,7 +1636,7 @@ int Run(int argc, char** argv) {
     HSteamUser user{0};
     const bool sessionOpened = (client != nullptr) && OpenSession(client, pipe, user);
 
-    SteamSessionGuard sessionGuard{sessionOpened ? client : nullptr, pipe, steamClient};
+    SteamSessionGuard sessionGuard{sessionOpened ? client : nullptr, pipe, sessionOpened ? user : 0, steamClient};
 
     if (!sessionOpened) {
         std::cout << "[WARN] Steam 未运行或未登录，已自动切换为【离线降级模式】。\n"
@@ -1617,6 +1666,10 @@ int Run(int argc, char** argv) {
     std::vector<DlcInfo> dlcs;
     std::vector<DepotKeyInfo> depotKeys = ExtractDepotDecryptionKeys(
         steamPath, *appId, sessionOpened ? client : nullptr, pipe, user, dlcs);
+
+    // 在线会话已完成全部在线提取工作，立即主动释放 Steam 用户会话与管道并清空环境变量，
+    // 使 Steam 客户端无需等待后续本地文件解析或用户按键即可瞬间恢复正常空闲状态。
+    sessionGuard.Reset();
 
     std::unordered_map<uint32_t, uint64_t> appTokens;
     if (!steamPath.empty()) {
