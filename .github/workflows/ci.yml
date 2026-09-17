@@ -1,5 +1,4 @@
 name: CI
-run-name: ${{ (github.ref_name == 'test' || github.base_ref == 'test') && format('[Test] CI - {0}', github.ref_name) || format('CI - {0}', github.ref_name) }}
 
 on:
   pull_request:
