@@ -55,10 +55,10 @@ jobs:
           git push origin ${{ github.event.inputs.version }}
 
       - name: Package Release
-        run: 7z a OpenSteamTool-${{ github.event.inputs.version }}-Release.zip ".\build\Release\*" -x!*.lib -x!*.exp -mx5
+        run: 7z a OpenSteamTool-${{ github.event.inputs.version }}-Release.zip ".\build\Release\*" -mx5
 
       - name: Package Debug
-        run: 7z a OpenSteamTool-${{ github.event.inputs.version }}-Debug.zip ".\build\Debug\*" -x!*.lib -x!*.exp -mx5
+        run: 7z a OpenSteamTool-${{ github.event.inputs.version }}-Debug.zip ".\build\Debug\*" -mx5
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
