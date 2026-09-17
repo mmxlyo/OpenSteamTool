@@ -113,6 +113,64 @@ struct SteamSessionGuard {
     }
 };
 
+// RAII wrapper for Windows FindFirstFile/FindNextFile HANDLE
+struct ScopedFindHandle {
+    HANDLE handle{INVALID_HANDLE_VALUE};
+    ScopedFindHandle() = default;
+    explicit ScopedFindHandle(HANDLE h) noexcept : handle(h) {}
+    ~ScopedFindHandle() noexcept {
+        if (handle != INVALID_HANDLE_VALUE && handle != nullptr) {
+            FindClose(handle);
+        }
+    }
+    ScopedFindHandle(const ScopedFindHandle&) = delete;
+    ScopedFindHandle& operator=(const ScopedFindHandle&) = delete;
+    ScopedFindHandle(ScopedFindHandle&& other) noexcept : handle(other.handle) {
+        other.handle = INVALID_HANDLE_VALUE;
+    }
+    ScopedFindHandle& operator=(ScopedFindHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle != INVALID_HANDLE_VALUE && handle != nullptr) {
+                FindClose(handle);
+            }
+            handle = other.handle;
+            other.handle = INVALID_HANDLE_VALUE;
+        }
+        return *this;
+    }
+    operator HANDLE() const noexcept { return handle; }
+    bool IsValid() const noexcept { return handle != INVALID_HANDLE_VALUE && handle != nullptr; }
+};
+
+// RAII wrapper for Windows HKEY
+struct ScopedHKey {
+    HKEY key{nullptr};
+    ScopedHKey() = default;
+    explicit ScopedHKey(HKEY k) noexcept : key(k) {}
+    ~ScopedHKey() noexcept {
+        if (key != nullptr) {
+            RegCloseKey(key);
+        }
+    }
+    ScopedHKey(const ScopedHKey&) = delete;
+    ScopedHKey& operator=(const ScopedHKey&) = delete;
+    ScopedHKey(ScopedHKey&& other) noexcept : key(other.key) {
+        other.key = nullptr;
+    }
+    ScopedHKey& operator=(ScopedHKey&& other) noexcept {
+        if (this != &other) {
+            if (key != nullptr) {
+                RegCloseKey(key);
+            }
+            key = other.key;
+            other.key = nullptr;
+        }
+        return *this;
+    }
+    operator HKEY() const noexcept { return key; }
+    bool IsValid() const noexcept { return key != nullptr; }
+};
+
 std::string SanitizeComment(std::string_view text) {
     std::string out(text);
     for (char& c : out) {
@@ -123,6 +181,7 @@ std::string SanitizeComment(std::string_view text) {
 
 std::vector<std::string> TokenizeQuoted(std::string_view line) {
     std::vector<std::string> tokens;
+    tokens.reserve(4);
     size_t pos = 0;
     while ((pos = line.find('"', pos)) != std::string_view::npos) {
         size_t endPos = line.find('"', pos + 1);
@@ -178,37 +237,33 @@ std::optional<uint32_t> ReadAppIdFromConsole() {
 }
 
 std::string JoinPath(std::string base, std::string_view name) {
-    for (char& ch : base) {
-        if (ch == '/') ch = '\\';
-    }
+    std::replace(base.begin(), base.end(), '/', '\\');
     if (!base.empty() && base.back() != '\\') base += '\\';
     base += name;
     return base;
 }
 
 std::string NormalizeDir(std::string dir) {
-    for (char& ch : dir) {
-        if (ch == '/') ch = '\\';
-    }
+    std::replace(dir.begin(), dir.end(), '/', '\\');
     if (!dir.empty() && dir.back() == '\\') dir.pop_back();
     return dir;
 }
 
 std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, const char* valueName) {
-    HKEY key{nullptr};
-    LSTATUS status = RegOpenKeyExA(root, subKey, 0, KEY_READ | KEY_WOW64_32KEY, &key);
+    HKEY rawKey{nullptr};
+    LSTATUS status = RegOpenKeyExA(root, subKey, 0, KEY_READ | KEY_WOW64_32KEY, &rawKey);
     if (status != ERROR_SUCCESS) {
-        status = RegOpenKeyExA(root, subKey, 0, KEY_READ, &key);
+        status = RegOpenKeyExA(root, subKey, 0, KEY_READ, &rawKey);
     }
     if (status != ERROR_SUCCESS) {
         return std::nullopt;
     }
+    ScopedHKey key{rawKey};
 
     DWORD valueType{0};
     DWORD valueSize{0};
     status = RegQueryValueExA(key, valueName, nullptr, &valueType, nullptr, &valueSize);
     if (status != ERROR_SUCCESS || (valueType != REG_SZ && valueType != REG_EXPAND_SZ) || valueSize == 0) {
-        RegCloseKey(key);
         return std::nullopt;
     }
 
@@ -220,7 +275,6 @@ std::optional<std::string> QueryRegistryString(HKEY root, const char* subKey, co
         nullptr,
         reinterpret_cast<LPBYTE>(value.data()),
         &valueSize);
-    RegCloseKey(key);
 
     if (status != ERROR_SUCCESS) return std::nullopt;
     value.resize(valueSize);
@@ -290,15 +344,10 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
             }
         }
         unescaped = NormalizeDir(unescaped);
-        if (!unescaped.empty()) {
-            bool exists = false;
-            for (const auto& existing : libraries) {
-                if (_stricmp(existing.c_str(), unescaped.c_str()) == 0) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) libraries.push_back(unescaped);
+        if (!unescaped.empty() && std::none_of(libraries.begin(), libraries.end(), [&](const auto& existing) {
+            return _stricmp(existing.c_str(), unescaped.c_str()) == 0;
+        })) {
+            libraries.push_back(std::move(unescaped));
         }
     };
 
@@ -327,21 +376,22 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
 
 std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath) {
     std::vector<std::string> dirs;
+    auto addDir = [&](std::string d) {
+        if (!d.empty() && std::none_of(dirs.begin(), dirs.end(), [&](const auto& existing) {
+            return _stricmp(existing.c_str(), d.c_str()) == 0;
+        })) {
+            dirs.push_back(std::move(d));
+        }
+    };
+
     if (!steamPath.empty()) {
-        dirs.push_back(JoinPath(steamPath, "depotcache"));
+        addDir(JoinPath(steamPath, "depotcache"));
     }
 
     auto libraries = FindSteamLibraryFolders(steamPath);
     for (const auto& lib : libraries) {
-        std::string dc1 = JoinPath(lib, "depotcache");
-        std::string dc2 = JoinPath(lib, "steamapps\\depotcache");
-        bool exist1 = false, exist2 = false;
-        for (const auto& d : dirs) {
-            if (_stricmp(d.c_str(), dc1.c_str()) == 0) exist1 = true;
-            if (_stricmp(d.c_str(), dc2.c_str()) == 0) exist2 = true;
-        }
-        if (!exist1) dirs.push_back(dc1);
-        if (!exist2) dirs.push_back(dc2);
+        addDir(JoinPath(lib, "depotcache"));
+        addDir(JoinPath(lib, "steamapps\\depotcache"));
     }
     return dirs;
 }
@@ -369,26 +419,25 @@ std::string FindDepotManifestFile(const std::vector<std::string>& depotcacheDirs
     for (const auto& dc : depotcacheDirs) {
         std::string pattern = JoinPath(dc, std::to_string(depotId) + "_*.manifest");
         WIN32_FIND_DATAA fd{};
-        HANDLE hFind = FindFirstFileA(pattern.c_str(), &fd);
-        if (hFind != INVALID_HANDLE_VALUE) {
+        ScopedFindHandle hFind{FindFirstFileA(pattern.c_str(), &fd)};
+        if (hFind.IsValid()) {
             do {
                 if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                    std::string fname = fd.cFileName;
+                    std::string_view fname{fd.cFileName};
                     size_t under = fname.find('_');
                     size_t dot = fname.rfind('.');
-                    if (under != std::string::npos && dot != std::string::npos && dot > under + 1) {
-                        std::string candidate = fname.substr(under + 1, dot - under - 1);
+                    if (under != std::string_view::npos && dot != std::string_view::npos && dot > under + 1) {
+                        std::string_view candidate = fname.substr(under + 1, dot - under - 1);
                         if (IsValidManifestId(candidate)) {
                             if (bestPath.empty() || CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
                                 bestTime = fd.ftLastWriteTime;
                                 bestPath = JoinPath(dc, fname);
-                                bestManifestId = candidate;
+                                bestManifestId = std::string(candidate);
                             }
                         }
                     }
                 }
             } while (FindNextFileA(hFind, &fd));
-            FindClose(hFind);
         }
     }
 
@@ -1199,12 +1248,13 @@ bool WriteOutputs(uint32_t appId,
     std::vector<std::string> copiedManifests;
     for (const auto& dk : depotKeys) {
         if (!dk.manifestFilePath.empty()) {
-            size_t slash = dk.manifestFilePath.find_last_of("\\/");
-            std::string fname = (slash != std::string::npos) ? dk.manifestFilePath.substr(slash + 1) : dk.manifestFilePath;
-            std::string dest = JoinPath(dir, fname);
+            std::string_view pathView{dk.manifestFilePath};
+            size_t slash = pathView.find_last_of("\\/");
+            std::string_view fname = (slash != std::string_view::npos) ? pathView.substr(slash + 1) : pathView;
             if (std::find(copiedManifests.begin(), copiedManifests.end(), fname) == copiedManifests.end()) {
+                std::string dest = JoinPath(dir, fname);
                 if (CopyFileA(dk.manifestFilePath.c_str(), dest.c_str(), FALSE)) {
-                    copiedManifests.push_back(fname);
+                    copiedManifests.emplace_back(fname);
                 } else {
                     std::cerr << "[WARN] Failed to copy manifest " << fname << " (GetLastError=" << GetLastError() << ").\n";
                 }
@@ -1455,10 +1505,9 @@ bool WriteOutputs(uint32_t appId,
         std::cout << "[INFO] 未检测到该游戏拥有的 DLC / No owned DLCs found for AppID " << appId << ".\n";
     }
 
-    size_t keyCount = 0;
-    for (const auto& dk : depotKeys) {
-        if (!dk.hexKey.empty()) keyCount++;
-    }
+    const size_t keyCount = std::count_if(depotKeys.begin(), depotKeys.end(), [](const DepotKeyInfo& dk) {
+        return !dk.hexKey.empty();
+    });
     if (keyCount > 0) {
         std::cout << "[INFO] 已提取 " << keyCount << " 个 Depot 解密密钥 / Extracted " << keyCount << " depot decryption key(s):\n";
         for (const auto& dk : depotKeys) {
