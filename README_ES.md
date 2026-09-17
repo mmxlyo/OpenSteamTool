@@ -47,7 +47,7 @@
 - Configura `enabled`, `library_x64` y `library_x86`; la biblioteca inyectada debe coincidir con la arquitectura del proceso de destino.`library_x64` y `library_x86` pueden ser rutas absolutas, o rutas relativas resueltas desde el directorio raíz de Steam.
 
 ### Préstamo familiar y juego en remoto
-- Omite las restricciones de Steam Family Sharing para los juegos que se hayan añadido a la biblioteca con `addappid` en Lua. Todas las cuentas de la familia de Steam que participen en el préstamo familiar deben usar OpenSteamTool para que esto funcione.
+- Omite las restricciones de Steam Family Sharing, sin necesidad de configuración.
 
 ### Compatible con juegos protegidos por Denuvo y SteamStub
 - Los juegos con protección exclusiva SteamStub no requieren `AppTicket`. OpenSteamTool falsifica el AppId mediante el ticket de ConfigStore de Steam, sin inyectarse en el proceso del juego.

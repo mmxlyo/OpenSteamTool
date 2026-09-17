@@ -51,7 +51,7 @@
 - Load third-party DLLs into game processes through `[[inject]]` in `opensteamtool.toml`. See [Third-party DLL injection](#third-party-dll-injection).
 
 ### Family Sharing and Remote Play
-- Bypass Steam Family Sharing restrictions for games that have been added to the library with `addappid` in Lua. All accounts in the Steam Family that participate in sharing must use OpenSteamTool for this to work.
+- Bypass Steam Family Sharing restrictions with zero configuration.
 
 ### Compatible with games protected by Denuvo and SteamStub
 - SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool forges the requested AppId using Steam's local ConfigStore ticket, without injecting into the game process.
