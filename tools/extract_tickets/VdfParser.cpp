@@ -61,6 +61,20 @@ std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath) {
     return libraries;
 }
 
+bool IsAppInstalledLocally(const std::string& steamPath, uint32_t appId) {
+    if (steamPath.empty() || appId == 0) return false;
+    const std::string manifestName = "appmanifest_" + std::to_string(appId) + ".acf";
+    const auto libraries = FindSteamLibraryFolders(steamPath);
+    for (const auto& lib : libraries) {
+        const std::string manifestPath = JoinPath(lib, "steamapps\\" + manifestName);
+        const DWORD attr = GetFileAttributesA(manifestPath.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath, const std::vector<std::string>& libraries) {
     std::vector<std::string> dirs;
     auto addDir = [&](std::string d) {

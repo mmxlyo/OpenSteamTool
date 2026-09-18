@@ -17,6 +17,7 @@ struct DepotKeyInfo {
 };
 
 [[nodiscard]] std::vector<std::string> FindSteamLibraryFolders(const std::string& steamPath);
+[[nodiscard]] bool IsAppInstalledLocally(const std::string& steamPath, uint32_t appId);
 
 [[nodiscard]] std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath, const std::vector<std::string>& libraries);
 [[nodiscard]] std::vector<std::string> GetDepotcacheDirs(const std::string& steamPath);

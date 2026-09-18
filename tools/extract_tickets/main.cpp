@@ -24,13 +24,22 @@ void WaitForExit() {
 #if defined(_WIN64)
 int Run(int argc, char** argv) {
     std::optional<uint32_t> appId;
-    if (argc >= 2) {
-        appId = ParseAppId(argv[1]);
-        if (!appId) {
-            std::cerr << "[ERROR] 无效的 AppID / Invalid AppID: " << argv[1] << "\n";
-            return 1;
+    bool forceEticket{false};
+
+    for (int i = 1; i < argc; ++i) {
+        std::string_view arg{argv[i]};
+        if (arg == "--force-eticket" || arg == "-f") {
+            forceEticket = true;
+        } else if (!appId) {
+            appId = ParseAppId(arg);
+            if (!appId) {
+                std::cerr << "[ERROR] 无效的 AppID / Invalid AppID: " << arg << "\n";
+                return 1;
+            }
         }
-    } else {
+    }
+
+    if (!appId) {
         appId = ReadAppIdFromConsole();
         if (!appId) {
             std::cerr << "[ERROR] 无效的 AppID / Invalid AppID.\n";
@@ -38,15 +47,36 @@ int Run(int argc, char** argv) {
         }
     }
 
-    // Run in the target app's context so GetAppID and RequestEncryptedAppTicket
-    // resolve to this AppID. Must be set before steamclient64.dll initializes.
-    const std::string appIdStr{std::to_string(*appId)};
-    SetEnvironmentVariableA("SteamAppId", appIdStr.c_str());
-    SetEnvironmentVariableA("SteamGameId", appIdStr.c_str());
-    SetEnvironmentVariableA("SteamOverlayGameId", appIdStr.c_str());
-
     auto steamPathOpt = FindSteamInstallPath();
     std::string steamPath = steamPathOpt ? *steamPathOpt : "";
+
+    const bool isInstalled = IsAppInstalledLocally(steamPath, *appId);
+    const bool injectAppId = isInstalled || forceEticket;
+
+    // Only inject SteamAppId if the game is installed locally, or if --force-eticket is specified.
+    // If an uninstalled game runs with SteamAppId, Steam Client's AppManager registers the
+    // process as running the app. Upon disconnect, because no ACF manifest or game files exist
+    // on disk, Steam corrupts the in-memory app state into StateUpdateRequired (changing the UI
+    // button to "Start Install" / "开始安装") and causes uninstallation to hang indefinitely.
+    // AppOwnershipTicket (AppTicket), Depot decryption keys, and Access Tokens do NOT require SteamAppId!
+    // SteamGameId and SteamOverlayGameId are never needed and have been completely removed.
+    if (injectAppId) {
+        const std::string appIdStr{std::to_string(*appId)};
+        SetEnvironmentVariableA("SteamAppId", appIdStr.c_str());
+        if (!isInstalled && forceEticket) {
+            std::cout << "[WARN] 已启用 --force-eticket 强制注入未安装游戏的运行时环境。\n"
+                      << "       --force-eticket enabled for uninstalled app runtime context injection.\n"
+                      << "[WARN] 注意：这可能会导致 Steam 将其短暂识别为运行中，若状态异常可通过重启 Steam 恢复。\n"
+                      << "       Caution: this may cause Steam to mark it as running; restart Steam to restore if corrupted.\n\n";
+        }
+    } else {
+        std::cout << "[INFO] 目标 AppID " << *appId << " 未在本地库中安装，已启用【安全提取模式】。\n"
+                  << "       Target AppID " << *appId << " is not installed locally; enabled [Safe Extraction Mode].\n"
+                  << "[INFO] 正在提取所有权凭证 (AppTicket)、Depot 解密密钥与访问令牌 (Token)...\n"
+                  << "       Extracting ownership ticket (AppTicket), depot decryption keys, and tokens...\n"
+                  << "[INFO] 安全模式跳过运行上下文注入，彻底杜绝 Steam 客户端出现【开始安装】及卡卸载缺陷。\n"
+                  << "       Safe mode skips runtime context injection, completely preventing Steam client state corruption and uninstallation hang.\n\n";
+    }
 
     std::string steamClientPath;
     HMODULE steamClient = LoadSteamClient64(steamPath, steamClientPath);
@@ -79,8 +109,13 @@ int Run(int argc, char** argv) {
         ownership = ExtractAppOwnershipTicket(client, pipe, user, *appId);
         if (ownership) PrintHex("Ownership ticket", *ownership);
 
-        encrypted = ExtractEncryptedAppTicket(client, pipe, user, *appId);
-        if (encrypted) PrintHex("Encrypted ticket", *encrypted);
+        if (injectAppId) {
+            encrypted = ExtractEncryptedAppTicket(client, pipe, user, *appId);
+            if (encrypted) PrintHex("Encrypted ticket", *encrypted);
+        } else {
+            std::cout << "[INFO] 未安装游戏已在安全模式下跳过 ETicket 提取 (Lua 将自动保留模板并标记为 null)。\n"
+                      << "       Safe mode skipped ETicket extraction for uninstalled app (marked as null in Lua).\n";
+        }
     }
 
     std::vector<DlcInfo> dlcs;
