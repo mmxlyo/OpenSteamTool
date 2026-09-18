@@ -1,5 +1,4 @@
 #include "Hooks_SteamUI.h"
-#include "Hooks_Misc.h"
 #include "HookManager.h"
 #include "HookMacros.h"
 #include "dllmain.h"
@@ -207,18 +206,6 @@ namespace
     {
         if (pApp && LuaConfig::HasDepot(pApp->nAppID, false))
         {
-            const AccountID_t activeId = Hooks_Misc::GetActiveAccountID();
-            if (activeId != 0 && pApp->SteamID.GetAccountID() != activeId)
-            {
-                pApp->SteamID.Set(activeId, k_EUniversePublic, k_EAccountTypeIndividual);
-            }
-
-            pApp->OwnershipFlags = static_cast<EAppOwnershipFlags>(
-                (pApp->OwnershipFlags & ~k_EAppOwnershipFlags_SharedLicense) |
-                k_EAppOwnershipFlags_OwnsLicense |
-                k_EAppOwnershipFlags_LicensePermanent
-            );
-
             uint32_t t = LuaConfig::GetPurchaseTime(pApp->nAppID);
             if (t)
             {

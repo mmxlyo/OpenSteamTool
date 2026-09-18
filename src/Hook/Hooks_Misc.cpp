@@ -4,8 +4,6 @@
 #include "dllmain.h"
 
 #include <atomic>
-#include <charconv>
-#include <filesystem>
 #include <mutex>
 #include <unordered_map>
 
@@ -196,62 +194,6 @@ namespace Hooks_Misc {
             g_GameNameCache.emplace(appId, name);
         }
         return name;
-    }
-
-    static std::atomic<AccountID_t> g_ActiveAccountID{0};
-
-    void SetActiveAccountID(AccountID_t accountId) {
-        if (accountId != 0) {
-            g_ActiveAccountID.store(accountId, std::memory_order_release);
-            LOG_MISC_DEBUG("SetActiveAccountID: updated active AccountID to {}", accountId);
-        }
-    }
-
-    AccountID_t GetActiveAccountID() {
-        const AccountID_t cached = g_ActiveAccountID.load(std::memory_order_acquire);
-        if (cached != 0) return cached;
-
-        // 1. Fast-path: read ActiveUser from ActiveProcess registry (Windows)
-        DWORD activeUser = 0;
-        DWORD bytes = sizeof(activeUser);
-        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam\\ActiveProcess", L"ActiveUser",
-                         RRF_RT_REG_DWORD, nullptr, &activeUser, &bytes) == ERROR_SUCCESS && activeUser != 0) {
-            g_ActiveAccountID.store(activeUser, std::memory_order_release);
-            LOG_MISC_DEBUG("GetActiveAccountID: resolved from registry -> {}", activeUser);
-            return activeUser;
-        }
-
-        // 2. Zero-registry / Portable / Linux fallback: scan userdata/ for newest localconfig.vdf
-        if (SteamInstallPath[0] != '\0') {
-            std::error_code ec;
-            std::filesystem::path userdataPath = OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "userdata";
-            if (std::filesystem::exists(userdataPath, ec) && std::filesystem::is_directory(userdataPath, ec)) {
-                std::filesystem::file_time_type bestTime{};
-                AccountID_t bestId = 0;
-                for (const auto& entry : std::filesystem::directory_iterator(userdataPath, ec)) {
-                    if (!entry.is_directory(ec)) continue;
-                    std::string folderName = entry.path().filename().string();
-                    AccountID_t candidateId = 0;
-                    auto [ptr, convEc] = std::from_chars(folderName.data(), folderName.data() + folderName.size(), candidateId);
-                    if (convEc == std::errc{} && ptr == folderName.data() + folderName.size() && candidateId != 0) {
-                        auto cfgPath = entry.path() / "config" / "localconfig.vdf";
-                        if (std::filesystem::exists(cfgPath, ec)) {
-                            auto mtime = std::filesystem::last_write_time(cfgPath, ec);
-                            if (!ec && (bestId == 0 || mtime > bestTime)) {
-                                bestTime = mtime;
-                                bestId = candidateId;
-                            }
-                        }
-                    }
-                }
-                if (bestId != 0) {
-                    g_ActiveAccountID.store(bestId, std::memory_order_release);
-                    LOG_MISC_DEBUG("GetActiveAccountID: resolved from userdata -> {}", bestId);
-                    return bestId;
-                }
-            }
-        }
-        return 0;
     }
 
 }
