@@ -12,7 +12,12 @@ target_compile_features(ipc_codegen PRIVATE cxx_std_20)
 
 
 add_executable(extract_tickets
-    extract_tickets/extract_tickets.cpp
+    extract_tickets/main.cpp
+    extract_tickets/Utils.cpp
+    extract_tickets/VdfParser.cpp
+    extract_tickets/AppInfoParser.cpp
+    extract_tickets/SteamSession.cpp
+    extract_tickets/OutputWriter.cpp
 )
 target_compile_features(extract_tickets PRIVATE cxx_std_20)
 if(MSVC)
