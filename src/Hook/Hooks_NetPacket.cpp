@@ -298,25 +298,29 @@ namespace Hooks_NetPacket_UserStats {
             }
         }
 
-        // Guard: only modify header and strip stats if the app is managed by OST.
-        // If unmanaged, pass through untouched so we do not alter error codes for non-OST games.
+        // Always force eresult=OK on the header (mirrors upstream behaviour).
+        // Without this, a missed jobId lookup leaves a non-OK eresult on the wire
+        // and Steam silently discards the achievement data.
+        hdrMsg.set_eresult(static_cast<int32_t>(k_EResultOK));
+        g_cbNewHdr = static_cast<uint32>(hdrMsg.ByteSizeLong());
+        if (g_cbNewHdr > kMaxHdrSize || !hdrMsg.SerializeToArray(g_NewHdr, kMaxHdrSize))
+            return;
+        g_NeedReplaceHdr = true;
+        LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: modified header:\n{}", hdrMsg.DebugString());
+
+        // Body strip is gated on a confirmed OST-managed appId to avoid
+        // accidentally clearing stats for games we do not manage.
         if (!hasAppId || !LuaConfig::HasDepot(appId)) {
-            LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: no appid match, skip modification");
+            LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: no appid match, skip body strip");
             return;
         }
 
-        // Body: parse original response before marking modifications
         CPlayer_GetUserStats_Response resp;
         if (!resp.ParseFromArray(pBody, cbBody)){
             LOG_ACHIEVEMENT_WARN("Player::GetUserStats response: failed to ParseFromArray original response");
             return;
         }
         LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: original body:\n{}", resp.DebugString());
-
-        hdrMsg.set_eresult(static_cast<int32_t>(k_EResultOK));
-        g_cbNewHdr = static_cast<uint32>(hdrMsg.ByteSizeLong());
-        if (g_cbNewHdr > kMaxHdrSize || !hdrMsg.SerializeToArray(g_NewHdr, kMaxHdrSize))
-            return;
 
         resp.clear_stats();
         g_NewBodySize = static_cast<uint32>(resp.ByteSizeLong());
@@ -325,9 +329,6 @@ namespace Hooks_NetPacket_UserStats {
             return;
         }
         g_ResizedInPlace = true;
-        LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: modified header:\n{}", hdrMsg.DebugString());
-        g_NeedReplaceHdr = true;
-
         LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: modified body:\n{}", resp.DebugString());
     }
 
