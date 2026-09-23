@@ -91,8 +91,8 @@ namespace {
                 return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
 
             // Detect the first SteamNetworkingSockets call (interface 46) so GetAppID can
-            // flip to 480 for P2P games. Skipped once already seen or when not in onlinefix.
-            if (Hooks_Misc::IsOnlineFixActive() && !Hooks_Misc::ShouldReportOnlineFixAppId()) {
+            // flip to 480 for P2P games. Skipped once already seen, or when suppressed by -realappid.
+            if (Hooks_Misc::IsOnlineFixActive() && !Hooks_Misc::IsSuppressAppIdFlip() && !Hooks_Misc::IsNetworkingSocketsActive()) {
                 if (call.interfaceID() == EIPCInterface::IClientNetworkingSocketsSerialized)
                     Hooks_Misc::NotifyNetworkingSocketsUsed();
             }
