@@ -129,6 +129,10 @@ setStat(1361510, "76561197960287930") -- use the specified SteamID's achievement
 
 All function names are **case-insensitive**. `setAppTicket`, `setappticket`, `SetAppticket`, `SETAPPTICKET` etc. are all equivalent. The same applies to every registered function (`addAppId`, `AddToken`, `SETManifestid`, etc.).
 
+### Online Fix
+- Add `-onlinefix` to the Steam launch parameters to enable 480-based online play in games that use lobby matchmaking. Only one such game can run at a time. To revert, simply remove `-onlinefix` from the launch parameters.
+- Add `-realappid` alongside `-onlinefix` (i.e. `-onlinefix -realappid`) if the game crashes, exits, hangs, or black-screens on startup or after login.
+
 ### Configuration (optional)
 
 Rename `opensteamtool.example.toml` to `opensteamtool.toml` and place it in the Steam root directory (next to `steam.exe`).

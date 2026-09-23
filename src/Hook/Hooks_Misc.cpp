@@ -21,9 +21,21 @@ namespace {
     std::atomic<AppId_t> g_OnlineFixRealAppId{0};
     // True once the game starts SteamNetworkingSockets P2P (see GetAppID handler).
     std::atomic<bool>    g_NetworkingSocketsActive{false};
+    // Set by -realappid on the same command line. Suppresses the P2P appid flip
+    // for this launch only — see ShouldReportOnlineFixAppId.
+    std::atomic<bool>    g_SuppressAppIdFlip{false};
     std::mutex           g_GameNameMutex;
     std::unordered_map<AppId_t, std::string> g_GameNameCache;
 
+
+    static bool HasCmdLineArg(const char* cmdLine, const char* arg) {
+        if (!cmdLine || !arg) return false;
+        const size_t argLen = strlen(arg);
+        for (const char* p = cmdLine; *p; ++p) {
+            if (_strnicmp(p, arg, argLen) == 0) return true;
+        }
+        return false;
+    }
 
     // ── SpawnProcess interception ────────────────────────────────────────────
     // CUser_SpawnProcess(pCUser, pExePath, pCommandLine, pWorkingDir,
@@ -36,14 +48,19 @@ namespace {
         AppId_t appId = static_cast<AppId_t>(pGameID->AppID(true));
         const char* cmdLine = VehCommon::GetArg<const char*>(ctx, 3);
 
-        if (cmdLine && strstr(cmdLine, "-onlinefix"))
+        if (cmdLine && HasCmdLineArg(cmdLine, "-onlinefix"))
         {
-            g_OnlineFixRealAppId = appId;
-            g_NetworkingSocketsActive = false;
+            const bool suppress = HasCmdLineArg(cmdLine, "-realappid");
+            g_OnlineFixRealAppId.store(appId, std::memory_order_release);
+            g_NetworkingSocketsActive.store(false, std::memory_order_release);
+            g_SuppressAppIdFlip.store(suppress, std::memory_order_release);
             pGameID->SetAppID(kOnlineFixAppId);
-            LOG_MISC_INFO("SpawnProcess: appid {} -> {}, cmd=\"{}\"",appId, kOnlineFixAppId, cmdLine);
+            LOG_MISC_INFO("SpawnProcess: appid {} -> {}, realappid={}, cmd=\"{}\"",
+                          appId, kOnlineFixAppId, suppress, cmdLine);
         } else {
-            g_OnlineFixRealAppId = 0;
+            g_OnlineFixRealAppId.store(0, std::memory_order_release);
+            g_NetworkingSocketsActive.store(false, std::memory_order_release);
+            g_SuppressAppIdFlip.store(false, std::memory_order_release);
         }
     }
 
@@ -134,15 +151,37 @@ namespace Hooks_Misc {
         return g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0;
     }
 
+    bool IsSuppressAppIdFlip() {
+        return g_SuppressAppIdFlip.load(std::memory_order_relaxed);
+    }
+
+    bool IsNetworkingSocketsActive() {
+        return g_NetworkingSocketsActive.load(std::memory_order_relaxed);
+    }
+
     void NotifyNetworkingSocketsUsed() {
         if (g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0) {
             if (!g_NetworkingSocketsActive.exchange(true, std::memory_order_relaxed)) {
-                LOG_MISC_INFO("NetworkingSockets active: GetAppID now reports 480 for cert match");
+                if (g_SuppressAppIdFlip.load(std::memory_order_relaxed)) {
+                    LOG_MISC_INFO("NetworkingSockets active: -realappid active, keeping real appid");
+                } else {
+                    LOG_MISC_INFO("NetworkingSockets active: GetAppID now reports 480 for cert match");
+                }
             }
         }
     }
 
     bool ShouldReportOnlineFixAppId() {
+        // The flip exists so a P2P socket's appid matches the 480 session cert,
+        // which some titles need (#146). It is blunt though: from the moment it
+        // trips, every GetAppID answer is the fake appid for the rest of the
+        // process's life. Games that ask Steam for their own appid during later
+        // startup then get 480 and misbehave — Bodycam (2406770) black-screens
+        // straight after login this way, and How to Fish (4001890) exits with 86.
+        //
+        // Both behaviours are needed by different games, and the call itself
+        // gives no way to tell them apart, so -realappid opts out per launch.
+        if (g_SuppressAppIdFlip.load(std::memory_order_relaxed)) return false;
         return g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0 && g_NetworkingSocketsActive.load(std::memory_order_relaxed);
     }
     

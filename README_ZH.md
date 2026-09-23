@@ -130,6 +130,10 @@ setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用
 
 所有函数名**不区分大小写**。`setAppTicket`、`setappticket`、`SetAppticket`、`SETAPPTICKET` 等都是等价的。每个注册的函数都适用（`addAppId`、`AddToken`、`SETManifestid` 等）。
 
+### 联机修复 (Online Fix)
+- 在 Steam 启动选项中添加 `-onlinefix`，可在使用大厅匹配的游戏中启用基于 480 (Spacewar) 的在线联机功能。同一时间只能运行一个此类游戏。若要还原，直接移除 `-onlinefix` 即可。
+- 如果游戏启动或登录后出现闪退、报错退出、卡死或黑屏，请在启动选项中同时添加 `-realappid`（即 `-onlinefix -realappid`）。
+
 ### 配置（可选）
 
 将 `opensteamtool.example.toml` 重命名为 `opensteamtool.toml` 并放在 Steam 根目录（与 `steam.exe` 同级）。
