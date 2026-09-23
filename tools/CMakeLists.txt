@@ -18,6 +18,7 @@ add_executable(extract_tickets
     extract_tickets/AppInfoParser.cpp
     extract_tickets/SteamSession.cpp
     extract_tickets/OutputWriter.cpp
+    extract_tickets/LuaFallbackParser.cpp
 )
 target_compile_features(extract_tickets PRIVATE cxx_std_20)
 if(MSVC)

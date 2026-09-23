@@ -1,4 +1,5 @@
 #include "AppInfoParser.h"
+#include "LuaFallbackParser.h"
 #include "OutputWriter.h"
 #include "RaiiGuards.h"
 #include "SteamSession.h"
@@ -134,6 +135,13 @@ int Run(int argc, char** argv) {
             targetAppIds.insert(dlc.dlcId);
         }
         appTokens = ParseAppInfoTokens(steamPath, &targetAppIds);
+    }
+
+    const auto luaFallback = ParseLuaFallbackData(steamPath, *appId);
+    for (const auto& [tId, tVal] : luaFallback.appTokens) {
+        if (tVal != 0) {
+            appTokens.try_emplace(tId, tVal);
+        }
     }
 
     const bool ok = WriteOutputs(*appId, ownership, encrypted, depotKeys, dlcs, appTokens);
