@@ -90,17 +90,36 @@ namespace {
             if (!call.ok())
                 return oIPCProcessMessage(pServer, hSteamPipe, pRead, pWrite);
 
-            // Detect the first SteamNetworkingSockets call (interface 46) so GetAppID can
-            // flip to 480 for P2P games. Skipped once already seen, or when suppressed by -realappid.
-            if (Hooks_Misc::IsOnlineFixActive() && !Hooks_Misc::IsSuppressAppIdFlip() && !Hooks_Misc::IsNetworkingSocketsActive()) {
+            // Detect the first SteamNetworkingSockets call (interface 46) so state is tracked.
+            // Skipped once already seen or when OnlineFix is not active.
+            if (Hooks_Misc::IsOnlineFixActive() && !Hooks_Misc::IsNetworkingSocketsActive()) {
                 if (call.interfaceID() == EIPCInterface::IClientNetworkingSocketsSerialized)
                     Hooks_Misc::NotifyNetworkingSocketsUsed();
             }
 
+            // For OnlineFix games, intercept IClientRemoteStorage (interface 13):
+            // If the method passes an AppID as its first parameter (e.g. *ForApp calls),
+            // rewrite 480 to realAppId before steamclient processes it.
+            // NOTE: We do NOT blindly scan the entire payload to avoid corrupting file
+            // data in FileWrite calls that might contain 480 (0x000001E0) as content.
+            if (Hooks_Misc::IsOnlineFixActive() && call.interfaceID() == EIPCInterface::IClientRemoteStorage) {
+                const AppId_t realAppId = Hooks_Misc::ResolveAppId();
+                if (realAppId != 0 && call.body().size() >= sizeof(uint32_t)) {
+                    uint32_t firstArg = 0;
+                    memcpy(&firstArg, call.body().data(), sizeof(uint32_t));
+                    if (firstArg == kOnlineFixAppId) {
+                        memcpy(const_cast<uint8_t*>(call.body().data()), &realAppId, sizeof(uint32_t));
+                        LOG_IPC_DEBUG("IClientRemoteStorage IPC: mapped AppID {} -> {} in request header arg",
+                                      kOnlineFixAppId, realAppId);
+                    }
+                }
+            }
+
             // Lookup handler by interface ID + method hash.
-            // If matched and app is configured in Lua, resolve pipe and invoke handlers.
+            // If matched and app is configured in Lua or OnlineFix is active, resolve pipe and invoke handlers.
             if (const auto* handler = FindHandler(call.interfaceID(), call.funcHash())) {
-                if (LuaConfig::HasDepot(Hooks_Misc::ResolveAppId())) {
+                const AppId_t currentAppId = Hooks_Misc::ResolveAppId();
+                if (LuaConfig::HasDepot(currentAppId, false) || Hooks_Misc::IsOnlineFixActive()) {
                     if (CPipeClient* pipe = GetPipe(pServer, hSteamPipe)) {
                         LOG_IPC_TRACE("Resolved IPC handler: {} {}", pipe->DebugString(), handler->DebugString());
                         if (handler->pre)

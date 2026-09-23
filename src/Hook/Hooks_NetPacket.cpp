@@ -881,20 +881,44 @@ namespace Hooks_NetPacket_RichPresence {
                 msg.games_played(msg.games_played_size() - 1).game_id() & UINT32_MAX);
         }
 
-        // Only track when the topmost is an unlocked AppId we can inject for.
-        // Owned games on top let the server's natural broadcast paint the
-        // cache; -onlinefix games are already handled by the OnlineFix path.
+        // For -onlinefix games, map topmost 480 to real AppId so CloudRedirectHost
+        // can track and sync cloud saves for the real game.
+        AppId_t effectiveTopmost = topmost;
+        if (topmost == kOnlineFixAppId && Hooks_Misc::IsOnlineFixActive()) {
+            effectiveTopmost = Hooks_Misc::ResolveAppId();
+        }
+
+        // Only track when the topmost is an app configured in Lua config or active -onlinefix.
+        // Owned games on top without Lua config let the server's natural broadcast paint the cache.
+        const bool isOnlineFixApp = Hooks_Misc::IsOnlineFixActive() && (effectiveTopmost == Hooks_Misc::ResolveAppId());
         AppId_t newTracked = 0;
-        if (topmost != 0 && topmost != kOnlineFixAppId && LuaConfig::HasDepot(topmost))
-            newTracked = topmost;
+        if (effectiveTopmost != 0 && effectiveTopmost != kOnlineFixAppId &&
+            (LuaConfig::HasDepot(effectiveTopmost, false) || isOnlineFixApp))
+        {
+            newTracked = effectiveTopmost;
+        }
 
         const AppId_t oldTracked = g_PlayingAppId.exchange(newTracked);
         if (oldTracked == newTracked) return;
 
-        if (oldTracked != 0)
-            CloudRedirectHost::NotifyAppRunning(oldTracked, false);
-        if (newTracked != 0)
-            CloudRedirectHost::NotifyAppRunning(newTracked, true);
+        if (oldTracked != 0) {
+            try {
+                CloudRedirectHost::NotifyAppRunning(oldTracked, false);
+            } catch (const std::exception& e) {
+                LOG_RICHPRESENCE_ERROR("NotifyAppRunning({}, false) failed: {}", oldTracked, e.what());
+            } catch (...) {
+                LOG_RICHPRESENCE_ERROR("NotifyAppRunning({}, false) failed with unknown exception", oldTracked);
+            }
+        }
+        if (newTracked != 0) {
+            try {
+                CloudRedirectHost::NotifyAppRunning(newTracked, true);
+            } catch (const std::exception& e) {
+                LOG_RICHPRESENCE_ERROR("NotifyAppRunning({}, true) failed: {}", newTracked, e.what());
+            } catch (...) {
+                LOG_RICHPRESENCE_ERROR("NotifyAppRunning({}, true) failed with unknown exception", newTracked);
+            }
+        }
 
         std::lock_guard lock(g_RPMutex);
         if (newTracked != 0) {
@@ -1152,7 +1176,12 @@ namespace Hooks_NetPacket_Cloud {
         if (reqHdr.has_steamid() && reqHdr.steamid())
             g_localSteamId = reqHdr.steamid();
 
-        const uint32 appId = ExtractAppId(jobName, pBody, cbBody);
+        const uint32 rawAppId = ExtractAppId(jobName, pBody, cbBody);
+        uint32 appId = rawAppId;
+        if (appId == kOnlineFixAppId && Hooks_Misc::IsOnlineFixActive()) {
+            appId = Hooks_Misc::ResolveAppId();
+            LOG_NETPACKET_INFO("Cloud RPC {}: mapped OnlineFix AppID {} -> {}", jobName, rawAppId, appId);
+        }
         if (appId == 0 || !CloudRedirectHost::IsApp(appId)) return false;
 
         const uint32 accountId = static_cast<uint32>(g_localSteamId & 0xFFFFFFFFull);

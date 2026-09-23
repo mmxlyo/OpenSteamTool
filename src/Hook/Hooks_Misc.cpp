@@ -1,6 +1,7 @@
 #include "Hooks_Misc.h"
 #include "HookMacros.h"
 #include "Utils/HookSupport/VehCommon.h"
+#include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include "dllmain.h"
 
 #include <atomic>
@@ -21,9 +22,11 @@ namespace {
     std::atomic<AppId_t> g_OnlineFixRealAppId{0};
     // True once the game starts SteamNetworkingSockets P2P (see GetAppID handler).
     std::atomic<bool>    g_NetworkingSocketsActive{false};
-    // Set by -realappid on the same command line. Suppresses the P2P appid flip
-    // for this launch only — see ShouldReportOnlineFixAppId.
-    std::atomic<bool>    g_SuppressAppIdFlip{false};
+    // If true, suppress flipping GetAppID to 480.
+    // By default in -onlinefix, we keep real AppID so games can read their saves,
+    // access user data, and authenticate properly.
+    // Flipped to false only if user explicitly passes -fakeappid or -p2pflip.
+    std::atomic<bool>    g_SuppressAppIdFlip{true};
     std::mutex           g_GameNameMutex;
     std::unordered_map<AppId_t, std::string> g_GameNameCache;
 
@@ -32,7 +35,14 @@ namespace {
         if (!cmdLine || !arg) return false;
         const size_t argLen = strlen(arg);
         for (const char* p = cmdLine; *p; ++p) {
-            if (_strnicmp(p, arg, argLen) == 0) return true;
+            if (_strnicmp(p, arg, argLen) == 0) {
+                if (p == cmdLine || *(p - 1) == ' ' || *(p - 1) == '\t' || *(p - 1) == '"') {
+                    const char next = p[argLen];
+                    if (next == '\0' || next == ' ' || next == '\t' || next == '"' || next == '=') {
+                        return true;
+                    }
+                }
+            }
         }
         return false;
     }
@@ -50,17 +60,21 @@ namespace {
 
         if (cmdLine && HasCmdLineArg(cmdLine, "-onlinefix"))
         {
-            const bool suppress = HasCmdLineArg(cmdLine, "-realappid");
+            // By default, keep real AppID so games can find their save files and authenticate.
+            // Only flip GetAppID to 480 if user explicitly passes -fakeappid or -p2pflip.
+            const bool explicitFake = HasCmdLineArg(cmdLine, "-fakeappid") || HasCmdLineArg(cmdLine, "-p2pflip");
+            const bool suppress = !explicitFake;
             g_OnlineFixRealAppId.store(appId, std::memory_order_release);
             g_NetworkingSocketsActive.store(false, std::memory_order_release);
             g_SuppressAppIdFlip.store(suppress, std::memory_order_release);
             pGameID->SetAppID(kOnlineFixAppId);
-            LOG_MISC_INFO("SpawnProcess: appid {} -> {}, realappid={}, cmd=\"{}\"",
+            CloudRedirectHost::AddApp(appId);
+            LOG_MISC_INFO("SpawnProcess: appid {} -> {}, suppressFlip={}, cmd=\"{}\"",
                           appId, kOnlineFixAppId, suppress, cmdLine);
         } else {
             g_OnlineFixRealAppId.store(0, std::memory_order_release);
             g_NetworkingSocketsActive.store(false, std::memory_order_release);
-            g_SuppressAppIdFlip.store(false, std::memory_order_release);
+            g_SuppressAppIdFlip.store(true, std::memory_order_release);
         }
     }
 
@@ -102,6 +116,42 @@ namespace {
                                     a8, a9, a10, a11);
     }
 
+    // ── GetRedirectedAppId ───────────────────────────────────────────────────
+    // Queries Valve's appidredirect table in CUserRemoteStorage.
+    // When OnlineFix is active and AppID is 480, redirect to real AppID so all
+    // quota queries, remotecache.vdf operations, and AutoCloud logic use real AppID.
+    HOOK_FUNC(GetRedirectedAppId, AppId_t, AppId_t appId)
+    {
+        if (appId == kOnlineFixAppId && Hooks_Misc::IsOnlineFixActive()) {
+            const AppId_t realAppId = Hooks_Misc::ResolveAppId();
+            if (realAppId != 0) {
+                LOG_MISC_DEBUG("GetRedirectedAppId: redirecting AppID {} -> {}", appId, realAppId);
+                return realAppId;
+            }
+        }
+        return oGetRedirectedAppId ? oGetRedirectedAppId(appId) : appId;
+    }
+
+    // ── RemoteStorage_ResolvePath ────────────────────────────────────────────
+    // CUserRemoteStorage::ResolvePath calculates physical on-disk paths:
+    // userdata/<SteamID>/<AppID>/remote/<filename> or /local/<filename>.
+    // When OnlineFix is active and AppID is 480, redirect to real AppID so
+    // file reads and writes go directly to the real AppID's folder.
+    HOOK_FUNC(RemoteStorage_ResolvePath, bool,
+              void* pThis, AppId_t appId, int32 ePathType,
+              const char* pchRelativePath, void* pstrResolvedPath)
+    {
+        if (appId == kOnlineFixAppId && Hooks_Misc::IsOnlineFixActive()) {
+            const AppId_t realAppId = Hooks_Misc::ResolveAppId();
+            if (realAppId != 0) {
+                LOG_MISC_DEBUG("RemoteStorage_ResolvePath: appid {} -> {}, ePathType={}, path='{}'",
+                              appId, realAppId, ePathType, pchRelativePath ? pchRelativePath : "(null)");
+                appId = realAppId;
+            }
+        }
+        return oRemoteStorage_ResolvePath ? oRemoteStorage_ResolvePath(pThis, appId, ePathType, pchRelativePath, pstrResolvedPath) : false;
+    }
+
 }
 
 namespace Hooks_Misc {
@@ -116,6 +166,8 @@ namespace Hooks_Misc {
         HOOK_BEGIN();
         INSTALL_HOOK_C(BuildSpawnEnvBlock);
         INSTALL_HOOK_C(OptedInMask);
+        INSTALL_HOOK_C(GetRedirectedAppId);
+        INSTALL_HOOK_C(RemoteStorage_ResolvePath);
         HOOK_END();
     }
 
@@ -123,6 +175,8 @@ namespace Hooks_Misc {
         UNHOOK_BEGIN();
         UNINSTALL_HOOK(BuildSpawnEnvBlock);
         UNINSTALL_HOOK(OptedInMask);
+        UNINSTALL_HOOK(GetRedirectedAppId);
+        UNINSTALL_HOOK(RemoteStorage_ResolvePath);
         UNHOOK_END();
     }
 
@@ -163,7 +217,7 @@ namespace Hooks_Misc {
         if (g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0) {
             if (!g_NetworkingSocketsActive.exchange(true, std::memory_order_relaxed)) {
                 if (g_SuppressAppIdFlip.load(std::memory_order_relaxed)) {
-                    LOG_MISC_INFO("NetworkingSockets active: -realappid active, keeping real appid");
+                    LOG_MISC_INFO("NetworkingSockets active: keeping real appid {}", g_OnlineFixRealAppId.load(std::memory_order_relaxed));
                 } else {
                     LOG_MISC_INFO("NetworkingSockets active: GetAppID now reports 480 for cert match");
                 }

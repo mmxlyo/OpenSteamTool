@@ -51,9 +51,8 @@ std::vector<std::string> BuildLuaWatchDirs() {
     std::vector<std::string> watchDirs = Config::GetLuaPaths();
     watchDirs.push_back(g_defaultLuaDir);
     if (IsPortableMode()) {
-        std::string steamLua = OSTPlatform::Encoding::PathToUtf8(
-            OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua");
-        if (std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(steamLua)) && steamLua != g_defaultLuaDir) {
+        std::error_code ec;
+        if (std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(steamLua), ec) && !ec && steamLua != g_defaultLuaDir) {
             watchDirs.push_back(steamLua);
         }
     }

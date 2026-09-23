@@ -27,6 +27,9 @@ namespace CloudRedirectHost {
     // Whether CloudRedirect is currently redirecting saves for this appid.
     bool IsApp(uint32_t appId);
 
+    // Dynamically register an app (e.g. from -onlinefix spawn) with CloudRedirect.
+    void AddApp(uint32_t appId);
+
     // Bridge from the NetPacket hook: forwards a single Cloud.* RPC to
     // CloudRedirect. Returns false when not handled (caller chains to original).
     bool HandleCloudRpc(const char* method, uint32_t appId, uint32_t accountId,
