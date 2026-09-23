@@ -53,8 +53,14 @@ namespace AppTicket {
     // Write AppTicket binary data to Steam's local credential store.
     bool WriteAppOwnershipTicket(AppId_t appId, const std::vector<uint8_t>& data);
 
+    // Remove in-memory AppTicket for an appId.
+    bool RemoveAppOwnershipTicket(AppId_t appId);
+
     // Write ETicket binary data to Steam's local credential store.
     bool WriteEncryptedTicket(AppId_t appId, const std::vector<uint8_t>& data);
+
+    // Remove in-memory ETicket for an appId.
+    bool RemoveEncryptedTicket(AppId_t appId);
 
     // Write authorized SteamID to Steam's local credential store.
     bool WriteSteamID(AppId_t appId, uint64_t steamId);

@@ -19,9 +19,6 @@ namespace Hooks_Misc {
     // True while a -onlinefix game is the active spawn.
     bool IsOnlineFixActive();
 
-    // True if -realappid was passed on launch to suppress flipping GetAppID to 480.
-    bool IsSuppressAppIdFlip();
-
     // True once SteamNetworkingSockets (IPC interface 46) has been observed.
     bool IsNetworkingSocketsActive();
 

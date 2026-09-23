@@ -51,10 +51,10 @@
 
 ### Compatible con juegos protegidos por Denuvo y SteamStub
 - Los juegos con protección exclusiva SteamStub no requieren `AppTicket`. OpenSteamTool falsifica el AppId mediante el ticket de ConfigStore de Steam, sin inyectarse en el proceso del juego.
-- Los juegos con Denuvo requieren datos de credenciales. Se almacenan en `<Directorio de Steam o Portable>/config/credentials/<AppId>/` (`AppTicket.bin`, `ETicket.bin`, `SteamID.txt`), ya no en el Registro de Windows.
-- **Tickets explícitos**: Usa `setAppTicket(appid, "hex")` y `setETicket(appid, "hex")` en la configuración Lua. `AppTicket` ya contiene el SteamID; **no** es necesario configurar `SteamID.txt` si se usan tickets explícitos. Al eliminar el script Lua, este directorio se limpia automáticamente.
+- Los juegos con Denuvo requieren datos de credenciales. Las credenciales de autorización al cambiar de cuenta se almacenan en `<Directorio de Steam o Portable>/config/credentials/<AppId>/SteamID.txt`, ya no en el Registro de Windows.
+- **Tickets explícitos**: Usa `setAppTicket(appid, "hex")` y `setETicket(appid, "hex")` en la configuración Lua. Los tickets se gestionan directamente en la memoria sin generar archivos bin en el disco; comentarlos o eliminarlos los invalida automáticamente, evitando conflictos de prioridad con el cambio de cuenta. `AppTicket` ya contiene el SteamID; **no** es necesario configurar `SteamID.txt` si se usan tickets explícitos.
 - **Autorización offline al cambiar de cuenta**: Cuando una cuenta que posee el juego inicia en línea y pasa la verificación, el sistema guarda automáticamente su `SteamID.txt`. Basta con cambiar a una cuenta sin el juego.
-- **Prioridad de SteamID y Error 54**: El SteamID del `AppTicket` tiene prioridad; si no hay ticket explícito, se lee `SteamID.txt`. Si el SteamID no coincide con el ticket, Denuvo devolverá el Error 54 (`k_EResultDiskFull`).
+- **Prioridad de SteamID y Error 54**: El SteamID del `AppTicket` en memoria tiene prioridad; si no hay ticket explícito configurado (por ejemplo, comentado en Lua), se lee automáticamente `SteamID.txt`. Si el SteamID no coincide con el ticket, Denuvo devolverá el Error 54 (`k_EResultDiskFull`).
 - Los tokens de Denuvo pueden caducar. Si la autorización falla con el error `88500005`, vuelve a extraer y actualiza los datos del ticket en la configuración Lua.
 
 ### Extracción de tickets y configuración con `extract_tickets`
@@ -116,8 +116,8 @@ addtoken(1361510,"2764735786934684318") -- añade el token de acceso ("276473578
 setManifestid(1361511,"5656605350306673283") -- fija depotid:1361511 manifest_gid:5656605350306673283, el tamaño por defecto es 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- lo mismo, pero con un tamaño explícito
 
-setAppTicket(1361510,"0100000000000000...") -- escribe AppTicket en el almacenamiento local (config/credentials/1361510/AppTicket.bin)
-setETicket(1361510,"0100000000000000...")   -- escribe ETicket en el almacenamiento local (config/credentials/1361510/ETicket.bin)
+setAppTicket(1361510,"0100000000000000...") -- almacena AppTicket en el almacenamiento de credenciales en memoria
+setETicket(1361510,"0100000000000000...")   -- almacena ETicket en el almacenamiento de credenciales en memoria
 
 setStat(1361510, "76561197960287930") -- utiliza los datos de logros del SteamID especificado para el appid 1361510
 -- Si no se configura, se utiliza la API de estadísticas cuando está habilitada; de lo contrario se usa el SteamID por defecto 76561198028121353.

@@ -55,10 +55,10 @@
 
 ### Compatible with games protected by Denuvo and SteamStub
 - SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool forges the requested AppId using Steam's local ConfigStore ticket, without injecting into the game process.
-- Denuvo-protected games require credential data. Credentials are stored under `<Steam or Portable Dir>/config/credentials/<AppId>/` (`AppTicket.bin`, `ETicket.bin`, `SteamID.txt`), no longer in the Windows Registry.
-- **Explicit Tickets**: Use `setAppTicket(appid, "hex")` and `setETicket(appid, "hex")` in Lua config. `AppTicket` inherently contains the owner's SteamID; configuring `SteamID.txt` is **not** required when using explicit tickets. Deleting the Lua script automatically cleans up this directory.
+- Denuvo-protected games require credential data. Account-switching authorization credentials are saved under `<Steam or Portable Dir>/config/credentials/<AppId>/SteamID.txt`, no longer in the Windows Registry.
+- **Explicit Tickets**: Use `setAppTicket(appid, "hex")` and `setETicket(appid, "hex")` in Lua config. Tickets are managed directly in memory without generating disk bin files; commenting out or removing them automatically invalidates them, eliminating priority conflicts with account switching. `AppTicket` inherently contains the owner's SteamID; configuring `SteamID.txt` is **not** required when using explicit tickets.
 - **Account Switching Offline Auth**: When an account owning the game launches online and passes verification, OpenSteamTool automatically saves its `SteamID.txt`. Simply switch to an account without the game.
-- **SteamID Priority & Error 54**: The SteamID embedded in `AppTicket` takes priority; if no explicit ticket exists, `SteamID.txt` is used. A mismatch between the SteamID and ticket causes Denuvo Error 54 (`k_EResultDiskFull`).
+- **SteamID Priority & Error 54**: The SteamID embedded in memory `AppTicket` takes priority; if no explicit ticket is configured (e.g. commented out in Lua), `SteamID.txt` is automatically used. A mismatch between the SteamID and ticket causes Denuvo Error 54 (`k_EResultDiskFull`).
 - Denuvo tokens may expire or be bound to hardware. If launch fails with Denuvo error `88500005`, re-extract and refresh the ticket data in the Lua config.
 
 ### Extracting Tickets & Config with `extract_tickets`
@@ -120,8 +120,8 @@ addtoken(1361510,"2764735786934684318") -- add access token ("276473578693468431
 setManifestid(1361511,"5656605350306673283") -- pin depotid:1361511 manifest_gid:5656605350306673283, size defaults to 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- same but with explicit size
 
-setAppTicket(1361510,"0100000000000000...") -- write AppTicket to local store (config/credentials/1361510/AppTicket.bin)
-setETicket(1361510,"0100000000000000...")   -- write ETicket to local store (config/credentials/1361510/ETicket.bin)
+setAppTicket(1361510,"0100000000000000...") -- store AppTicket in memory credential store
+setETicket(1361510,"0100000000000000...")   -- store ETicket in memory credential store
 
 setStat(1361510, "76561197960287930") -- use the specified SteamID's achievement data for appid 1361510
 -- If not configured, the stats API is used when enabled; otherwise default SteamID 76561198028121353 is used.

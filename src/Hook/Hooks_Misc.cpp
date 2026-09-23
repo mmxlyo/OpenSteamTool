@@ -25,7 +25,7 @@ namespace {
     // If true, suppress flipping GetAppID to 480.
     // By default in -onlinefix, we keep real AppID so games can read their saves,
     // access user data, and authenticate properly.
-    // Flipped to false only if user explicitly passes -fakeappid or -p2pflip.
+    // Flipped to false only if user explicitly passes -p2pflip.
     std::atomic<bool>    g_SuppressAppIdFlip{true};
     std::mutex           g_GameNameMutex;
     std::unordered_map<AppId_t, std::string> g_GameNameCache;
@@ -61,9 +61,9 @@ namespace {
         if (cmdLine && HasCmdLineArg(cmdLine, "-onlinefix"))
         {
             // By default, keep real AppID so games can find their save files and authenticate.
-            // Only flip GetAppID to 480 if user explicitly passes -fakeappid or -p2pflip.
-            const bool explicitFake = HasCmdLineArg(cmdLine, "-fakeappid") || HasCmdLineArg(cmdLine, "-p2pflip");
-            const bool suppress = !explicitFake;
+            // Only flip GetAppID to 480 if user explicitly passes -p2pflip.
+            const bool explicitFlip = HasCmdLineArg(cmdLine, "-p2pflip");
+            const bool suppress = !explicitFlip;
             g_OnlineFixRealAppId.store(appId, std::memory_order_release);
             g_NetworkingSocketsActive.store(false, std::memory_order_release);
             g_SuppressAppIdFlip.store(suppress, std::memory_order_release);
@@ -205,10 +205,6 @@ namespace Hooks_Misc {
         return g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0;
     }
 
-    bool IsSuppressAppIdFlip() {
-        return g_SuppressAppIdFlip.load(std::memory_order_relaxed);
-    }
-
     bool IsNetworkingSocketsActive() {
         return g_NetworkingSocketsActive.load(std::memory_order_relaxed);
     }
@@ -234,7 +230,7 @@ namespace Hooks_Misc {
         // straight after login this way, and How to Fish (4001890) exits with 86.
         //
         // Both behaviours are needed by different games, and the call itself
-        // gives no way to tell them apart, so -realappid opts out per launch.
+        // gives no way to tell them apart, so -p2pflip opts in per launch.
         if (g_SuppressAppIdFlip.load(std::memory_order_relaxed)) return false;
         return g_OnlineFixRealAppId.load(std::memory_order_relaxed) != 0 && g_NetworkingSocketsActive.load(std::memory_order_relaxed);
     }

@@ -54,8 +54,10 @@ namespace LuaConfig{
     // Per-file tracking: which depots each .lua file contributed.
     static std::string g_currentFile;
     static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileDepots;
-    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileCredentials;
-    static std::unordered_map<AppId_t, uint32_t> g_credentialRefCount;
+    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileAppTickets;
+    static std::unordered_map<AppId_t, uint32_t> g_appTicketRefCount;
+    static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileETickets;
+    static std::unordered_map<AppId_t, uint32_t> g_eTicketRefCount;
     static std::unordered_map<std::string, std::unordered_map<uint64_t, ManifestOverride>> g_fileManifestOverrides;
     static std::unordered_map<std::string, std::unordered_map<AppId_t, uint64_t>> g_fileTokens;
     static std::unordered_map<std::string, std::unordered_map<std::string, AppId_t>> g_fileProcesses;
@@ -583,8 +585,8 @@ namespace LuaConfig{
             return luaL_error(L, "setAppTicket: failed to write credential store");
 
         if (!g_currentFile.empty()) {
-            if (g_fileCredentials[g_currentFile].insert(appId).second) {
-                ++g_credentialRefCount[appId];
+            if (g_fileAppTickets[g_currentFile].insert(appId).second) {
+                ++g_appTicketRefCount[appId];
             }
         }
 
@@ -613,8 +615,8 @@ namespace LuaConfig{
             return luaL_error(L, "setETicket: failed to write credential store");
 
         if (!g_currentFile.empty()) {
-            if (g_fileCredentials[g_currentFile].insert(appId).second) {
-                ++g_credentialRefCount[appId];
+            if (g_fileETickets[g_currentFile].insert(appId).second) {
+                ++g_eTicketRefCount[appId];
             }
         }
 
@@ -916,18 +918,19 @@ namespace LuaConfig{
     }
 
     // ── per-file unload ────────────────────────────────────────
-    // Design tradeoff note: `isPermanentRemoval` controls whether persisted disk
-    // credentials (AppTicket.bin, ETicket.bin, SteamID.txt) are deleted.
-    // - On file reload/re-parse (ParseFile): passed as false to protect costly
-    //   Denuvo offline tokens/tickets against accidental wiping during edits.
-    // - On explicit file deletion (LuaFileWatcher delete event): passed as true,
-    //   triggering physical deletion once all referencing lua files and depots drop to 0.
+    // Design note: AppTicket and ETicket are handled purely in memory.
+    // - On file reload/re-parse (ParseFile) or unload: when ticket refcount reaches 0,
+    //   in-memory tickets are cleared immediately (commenting out a ticket removes it naturally).
+    // - On explicit file deletion (LuaFileWatcher delete event): `isPermanentRemoval` is true,
+    //   triggering physical deletion of the credentials directory (including SteamID.txt)
+    //   once all referencing lua files and depots drop to 0.
     static void UnloadFileLocked(const std::string& rawFilePath, bool isPermanentRemoval) {
         std::string filePath = OSTPlatform::Encoding::PathToUtf8(
             OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal());
         auto depotsIt = g_fileDepots.find(filePath);
         auto manifestIt = g_fileManifestOverrides.find(filePath);
-        auto credIt = g_fileCredentials.find(filePath);
+        auto appTicketIt = g_fileAppTickets.find(filePath);
+        auto eTicketIt = g_fileETickets.find(filePath);
         auto tokenIt = g_fileTokens.find(filePath);
         auto procIt = g_fileProcesses.find(filePath);
         auto forcedIt = g_fileForcedDenuvo.find(filePath);
@@ -937,7 +940,8 @@ namespace LuaConfig{
         auto eticketUrlIt = g_fileEticketUrl.find(filePath);
 
         if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end() &&
-            credIt == g_fileCredentials.end() && tokenIt == g_fileTokens.end() &&
+            appTicketIt == g_fileAppTickets.end() && eTicketIt == g_fileETickets.end() &&
+            tokenIt == g_fileTokens.end() &&
             procIt == g_fileProcesses.end() && forcedIt == g_fileForcedDenuvo.end() &&
             noDenuvoIt == g_fileNoDenuvo.end() && pinnedIt == g_filePinnedApps.end() &&
             statIt == g_fileStats.end() && eticketUrlIt == g_fileEticketUrl.end()) {
@@ -954,7 +958,7 @@ namespace LuaConfig{
                     DepotKeySet.erase(id);
                     g_purchaseTime.erase(id);
                     g_pendingRemovals.push_back(id);
-                    if (isPermanentRemoval && !g_credentialRefCount.contains(id)) {
+                    if (isPermanentRemoval && !g_appTicketRefCount.contains(id) && !g_eTicketRefCount.contains(id)) {
                         AppTicket::RemoveCredentials(id);
                     }
                 }
@@ -964,19 +968,36 @@ namespace LuaConfig{
             g_fileDepots.erase(depotsIt);
         }
 
-        if (credIt != g_fileCredentials.end()) {
-            for (AppId_t id : credIt->second) {
-                auto refIt = g_credentialRefCount.find(id);
-                if (refIt != g_credentialRefCount.end()) {
+        if (appTicketIt != g_fileAppTickets.end()) {
+            for (AppId_t id : appTicketIt->second) {
+                auto refIt = g_appTicketRefCount.find(id);
+                if (refIt != g_appTicketRefCount.end()) {
                     if (--refIt->second == 0) {
-                        g_credentialRefCount.erase(refIt);
-                        if (isPermanentRemoval && !g_depotRefCount.contains(id)) {
+                        g_appTicketRefCount.erase(refIt);
+                        AppTicket::RemoveAppOwnershipTicket(id);
+                        if (isPermanentRemoval && !g_depotRefCount.contains(id) && !g_eTicketRefCount.contains(id)) {
                             AppTicket::RemoveCredentials(id);
                         }
                     }
                 }
             }
-            g_fileCredentials.erase(credIt);
+            g_fileAppTickets.erase(appTicketIt);
+        }
+
+        if (eTicketIt != g_fileETickets.end()) {
+            for (AppId_t id : eTicketIt->second) {
+                auto refIt = g_eTicketRefCount.find(id);
+                if (refIt != g_eTicketRefCount.end()) {
+                    if (--refIt->second == 0) {
+                        g_eTicketRefCount.erase(refIt);
+                        AppTicket::RemoveEncryptedTicket(id);
+                        if (isPermanentRemoval && !g_depotRefCount.contains(id) && !g_appTicketRefCount.contains(id)) {
+                            AppTicket::RemoveCredentials(id);
+                        }
+                    }
+                }
+            }
+            g_fileETickets.erase(eTicketIt);
         }
 
         if (manifestIt != g_fileManifestOverrides.end()) {
@@ -1112,7 +1133,12 @@ namespace LuaConfig{
                 toUnload.push_back(filePath);
             }
         }
-        for (const auto& [filePath, _] : g_fileCredentials) {
+        for (const auto& [filePath, _] : g_fileAppTickets) {
+            if (StartsWithCaseInsensitive(filePath, dirPath)) {
+                toUnload.push_back(filePath);
+            }
+        }
+        for (const auto& [filePath, _] : g_fileETickets) {
             if (StartsWithCaseInsensitive(filePath, dirPath)) {
                 toUnload.push_back(filePath);
             }
@@ -1403,7 +1429,7 @@ namespace LuaConfig{
         std::unique_lock configLock(g_configSharedMutex);
         std::lock_guard luaLock(g_luaStateMutex);
 
-        // Remove old entries from this file before re-parsing (in-memory only, keep disk credentials).
+        // Remove old entries from this file before re-parsing.
         UnloadFileLocked(filePath, false);
         g_currentFile = filePath;
         g_fileParseSequence[filePath] = ++g_nextFileParseSequence;
@@ -1524,7 +1550,10 @@ namespace LuaConfig{
             for (const auto& [filePath, _] : g_fileManifestOverrides) {
                 rememberTracked(filePath);
             }
-            for (const auto& [filePath, _] : g_fileCredentials) {
+            for (const auto& [filePath, _] : g_fileAppTickets) {
+                rememberTracked(filePath);
+            }
+            for (const auto& [filePath, _] : g_fileETickets) {
                 rememberTracked(filePath);
             }
             for (const auto& [filePath, _] : g_fileTokens) {

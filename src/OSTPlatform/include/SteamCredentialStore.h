@@ -30,9 +30,11 @@ namespace OSTPlatform::SteamCredentialStore {
     // travels through the same shape going in and coming out.
     Status GetAppTicket(uint32_t appId, std::vector<uint8_t>& ticket);
     Status WriteAppTicket(uint32_t appId, const std::vector<uint8_t>& data);
+    bool RemoveAppTicket(uint32_t appId);
 
     Status GetETicket(uint32_t appId, std::vector<uint8_t>& ticket);
     Status WriteETicket(uint32_t appId, const std::vector<uint8_t>& data);
+    bool RemoveETicket(uint32_t appId);
 
     Status GetSteamId(uint32_t appId, uint64_t& steamId);
     Status WriteSteamId(uint32_t appId, uint64_t steamId);

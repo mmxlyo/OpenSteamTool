@@ -111,6 +111,10 @@ namespace AppTicket {
         return true;
     }
 
+    bool RemoveAppOwnershipTicket(AppId_t appId) {
+        return OSTPlatform::SteamCredentialStore::RemoveAppTicket(appId);
+    }
+
     bool WriteEncryptedTicket(AppId_t appId, const std::vector<uint8_t>& data) {
         // we can't execlude appids here 
         const auto status = OSTPlatform::SteamCredentialStore::WriteETicket(appId, data);
@@ -122,6 +126,10 @@ namespace AppTicket {
 
         LOG_INFO("Wrote ETicket for AppId {} ({} bytes)", appId, data.size());
         return true;
+    }
+
+    bool RemoveEncryptedTicket(AppId_t appId) {
+        return OSTPlatform::SteamCredentialStore::RemoveETicket(appId);
     }
 
     bool WriteSteamID(AppId_t appId, uint64_t steamId) {

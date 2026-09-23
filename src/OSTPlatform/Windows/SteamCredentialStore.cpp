@@ -27,8 +27,6 @@ constexpr const wchar_t* kActiveProcessKeyPath = L"Software\\Valve\\Steam\\Activ
 constexpr const wchar_t* kValueActiveUser = L"ActiveUser";
 constexpr const wchar_t* kValueUniverse = L"Universe";
 
-constexpr size_t kMaxTicketFileSize = 1024 * 1024; // 1 MB ceiling to protect against corrupt files
-
 uint64_t ExtractSteamIdFromTicketData(const uint8_t* data, size_t size) {
     if (!data || size < kSteamIdTicketMinimumSize) {
         return 0;
@@ -42,8 +40,6 @@ struct AppCredentialEntry {
     std::vector<uint8_t> appTicket;
     std::vector<uint8_t> eTicket;
     uint64_t steamId{0};
-    bool appTicketLoaded{false};
-    bool eTicketLoaded{false};
     bool steamIdLoaded{false};
 };
 
@@ -83,24 +79,6 @@ std::filesystem::path GetAppFilePath(uint32_t appId, std::wstring_view fileName)
     return GetAppDirectory(appId) / fileName;
 }
 
-bool ReadBinaryFile(const std::filesystem::path& path, std::vector<uint8_t>& out) {
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
-    if (!in.is_open()) {
-        return false;
-    }
-    const auto size = in.tellg();
-    if (size <= 0 || static_cast<size_t>(size) > kMaxTicketFileSize) {
-        return false;
-    }
-    std::vector<uint8_t> buf(static_cast<size_t>(size));
-    in.seekg(0, std::ios::beg);
-    if (!in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size))) {
-        return false;
-    }
-    out = std::move(buf);
-    return true;
-}
-
 bool AtomicWriteBinary(const std::filesystem::path& targetPath, const uint8_t* data, size_t size) {
     if (size > 0 && data == nullptr) {
         return false;
@@ -136,41 +114,6 @@ bool AtomicWriteBinary(const std::filesystem::path& targetPath, const uint8_t* d
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::filesystem::remove(tempPath, ec);
         return false;
-    }
-    return true;
-}
-
-bool BinaryFileEquals(const std::filesystem::path& path, const void* data, size_t size) {
-    if (size > 0 && data == nullptr) {
-        return false;
-    }
-    std::error_code ec;
-    const auto fileSize = std::filesystem::file_size(path, ec);
-    if (ec || fileSize != size) {
-        return false;
-    }
-    if (size == 0) {
-        return true;
-    }
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open()) {
-        return false;
-    }
-    constexpr size_t kChunkSize = 4096;
-    char buf[kChunkSize];
-    const char* p = reinterpret_cast<const char*>(data);
-    size_t remaining = size;
-    while (remaining > 0) {
-        const size_t chunk = (std::min)(remaining, kChunkSize);
-        in.read(buf, static_cast<std::streamsize>(chunk));
-        if (in.gcount() != static_cast<std::streamsize>(chunk)) {
-            return false;
-        }
-        if (std::memcmp(buf, p, chunk) != 0) {
-            return false;
-        }
-        p += chunk;
-        remaining -= chunk;
     }
     return true;
 }
@@ -246,173 +189,59 @@ std::filesystem::path GetStorageDirectory() {
 }
 
 Status GetAppTicket(uint32_t appId, std::vector<uint8_t>& ticket) {
-    {
-        std::shared_lock lock(g_credentialMutex);
-        auto it = g_credentials.find(appId);
-        if (it != g_credentials.end() && it->second.appTicketLoaded) {
-            if (!it->second.appTicket.empty()) {
-                ticket = it->second.appTicket;
-                OSTP_LOG_DEBUG("SteamCredentialStore: read AppTicket (memory) for appid={} bytes={}", appId, ticket.size());
-                return Status::Ok;
-            }
-            return Status::NotFound;
-        }
+    std::shared_lock lock(g_credentialMutex);
+    auto it = g_credentials.find(appId);
+    if (it != g_credentials.end() && !it->second.appTicket.empty()) {
+        ticket = it->second.appTicket;
+        OSTP_LOG_DEBUG("SteamCredentialStore: read AppTicket (memory) for appid={} bytes={}", appId, ticket.size());
+        return Status::Ok;
     }
-
-    const auto file = GetAppFilePath(appId, L"AppTicket.bin");
-    std::vector<uint8_t> diskTicket;
-    ReadBinaryFile(file, diskTicket);
-
-    {
-        std::unique_lock lock(g_credentialMutex);
-        auto& entry = g_credentials[appId];
-        if (!entry.appTicketLoaded) {
-            entry.appTicket = std::move(diskTicket);
-            entry.appTicketLoaded = true;
-        }
-        if (!entry.appTicket.empty()) {
-            ticket = entry.appTicket;
-            OSTP_LOG_DEBUG("SteamCredentialStore: loaded AppTicket from disk for appid={} bytes={}", appId, ticket.size());
-            return Status::Ok;
-        }
-    }
-
-    OSTP_LOG_DEBUG("SteamCredentialStore: AppTicket missing for appid={}", appId);
     return Status::NotFound;
 }
 
 Status WriteAppTicket(uint32_t appId, const std::vector<uint8_t>& data) {
-    const auto file = GetAppFilePath(appId, L"AppTicket.bin");
+    std::unique_lock lock(g_credentialMutex);
+    auto& entry = g_credentials[appId];
+    entry.appTicket = data;
+    OSTP_LOG_DEBUG("SteamCredentialStore: stored AppTicket (memory) for appid={} bytes={}", appId, data.size());
+    return Status::Ok;
+}
 
-    // Fast path 1: Check in-memory cache under lock
-    bool alreadyLoadedAndEqual = false;
-    {
-        std::shared_lock lock(g_credentialMutex);
-        auto it = g_credentials.find(appId);
-        if (it != g_credentials.end() && it->second.appTicketLoaded && it->second.appTicket == data) {
-            alreadyLoadedAndEqual = true;
-        }
+bool RemoveAppTicket(uint32_t appId) {
+    std::unique_lock lock(g_credentialMutex);
+    auto it = g_credentials.find(appId);
+    if (it != g_credentials.end()) {
+        it->second.appTicket.clear();
     }
-
-    if (alreadyLoadedAndEqual) {
-        std::error_code ec;
-        if (std::filesystem::exists(file, ec)) {
-            OSTP_LOG_DEBUG("SteamCredentialStore: AppTicket unchanged (memory hit) for appid={}", appId);
-            return Status::Ok;
-        }
-    }
-
-    // Fast path 2: Check disk content (skip redundant atomic write on startup)
-    if (BinaryFileEquals(file, data.data(), data.size())) {
-        {
-            std::unique_lock lock(g_credentialMutex);
-            auto& entry = g_credentials[appId];
-            entry.appTicket = data;
-            entry.appTicketLoaded = true;
-        }
-        OSTP_LOG_DEBUG("SteamCredentialStore: AppTicket unchanged on disk for appid={}, skipping write", appId);
-        return Status::Ok;
-    }
-
-    // Slow path: Content changed or file missing -> Atomic disk write first
-    if (AtomicWriteBinary(file, data.data(), data.size())) {
-        {
-            std::unique_lock lock(g_credentialMutex);
-            auto& entry = g_credentials[appId];
-            entry.appTicket = data;
-            entry.appTicketLoaded = true;
-        }
-        OSTP_LOG_INFO("SteamCredentialStore: persisted AppTicket for appid={} bytes={}", appId, data.size());
-        return Status::Ok;
-    }
-
-    OSTP_LOG_WARN("SteamCredentialStore: failed to persist AppTicket to disk for appid={}", appId);
-    return Status::Failed;
+    return true;
 }
 
 Status GetETicket(uint32_t appId, std::vector<uint8_t>& ticket) {
-    {
-        std::shared_lock lock(g_credentialMutex);
-        auto it = g_credentials.find(appId);
-        if (it != g_credentials.end() && it->second.eTicketLoaded) {
-            if (!it->second.eTicket.empty()) {
-                ticket = it->second.eTicket;
-                OSTP_LOG_DEBUG("SteamCredentialStore: read ETicket (memory) for appid={} bytes={}", appId, ticket.size());
-                return Status::Ok;
-            }
-            return Status::NotFound;
-        }
+    std::shared_lock lock(g_credentialMutex);
+    auto it = g_credentials.find(appId);
+    if (it != g_credentials.end() && !it->second.eTicket.empty()) {
+        ticket = it->second.eTicket;
+        OSTP_LOG_DEBUG("SteamCredentialStore: read ETicket (memory) for appid={} bytes={}", appId, ticket.size());
+        return Status::Ok;
     }
-
-    const auto file = GetAppFilePath(appId, L"ETicket.bin");
-    std::vector<uint8_t> diskTicket;
-    ReadBinaryFile(file, diskTicket);
-
-    {
-        std::unique_lock lock(g_credentialMutex);
-        auto& entry = g_credentials[appId];
-        if (!entry.eTicketLoaded) {
-            entry.eTicket = std::move(diskTicket);
-            entry.eTicketLoaded = true;
-        }
-        if (!entry.eTicket.empty()) {
-            ticket = entry.eTicket;
-            OSTP_LOG_DEBUG("SteamCredentialStore: loaded ETicket from disk for appid={} bytes={}", appId, ticket.size());
-            return Status::Ok;
-        }
-    }
-
-    OSTP_LOG_DEBUG("SteamCredentialStore: ETicket missing for appid={}", appId);
     return Status::NotFound;
 }
 
 Status WriteETicket(uint32_t appId, const std::vector<uint8_t>& data) {
-    const auto file = GetAppFilePath(appId, L"ETicket.bin");
+    std::unique_lock lock(g_credentialMutex);
+    auto& entry = g_credentials[appId];
+    entry.eTicket = data;
+    OSTP_LOG_DEBUG("SteamCredentialStore: stored ETicket (memory) for appid={} bytes={}", appId, data.size());
+    return Status::Ok;
+}
 
-    // Fast path 1: Check in-memory cache under lock
-    bool alreadyLoadedAndEqual = false;
-    {
-        std::shared_lock lock(g_credentialMutex);
-        auto it = g_credentials.find(appId);
-        if (it != g_credentials.end() && it->second.eTicketLoaded && it->second.eTicket == data) {
-            alreadyLoadedAndEqual = true;
-        }
+bool RemoveETicket(uint32_t appId) {
+    std::unique_lock lock(g_credentialMutex);
+    auto it = g_credentials.find(appId);
+    if (it != g_credentials.end()) {
+        it->second.eTicket.clear();
     }
-
-    if (alreadyLoadedAndEqual) {
-        std::error_code ec;
-        if (std::filesystem::exists(file, ec)) {
-            OSTP_LOG_DEBUG("SteamCredentialStore: ETicket unchanged (memory hit) for appid={}", appId);
-            return Status::Ok;
-        }
-    }
-
-    // Fast path 2: Check disk content (skip redundant atomic write on startup)
-    if (BinaryFileEquals(file, data.data(), data.size())) {
-        {
-            std::unique_lock lock(g_credentialMutex);
-            auto& entry = g_credentials[appId];
-            entry.eTicket = data;
-            entry.eTicketLoaded = true;
-        }
-        OSTP_LOG_DEBUG("SteamCredentialStore: ETicket unchanged on disk for appid={}, skipping write", appId);
-        return Status::Ok;
-    }
-
-    // Slow path: Content changed or file missing -> Atomic disk write first
-    if (AtomicWriteBinary(file, data.data(), data.size())) {
-        {
-            std::unique_lock lock(g_credentialMutex);
-            auto& entry = g_credentials[appId];
-            entry.eTicket = data;
-            entry.eTicketLoaded = true;
-        }
-        OSTP_LOG_INFO("SteamCredentialStore: persisted ETicket for appid={} bytes={}", appId, data.size());
-        return Status::Ok;
-    }
-
-    OSTP_LOG_WARN("SteamCredentialStore: failed to persist ETicket to disk for appid={}", appId);
-    return Status::Failed;
+    return true;
 }
 
 Status GetSteamId(uint32_t appId, uint64_t& steamId) {
@@ -506,27 +335,14 @@ Status WriteSteamId(uint32_t appId, uint64_t steamId) {
 }
 
 Status GetTicketSteamId(uint32_t appId, uint64_t& steamId) {
-    {
-        std::shared_lock lock(g_credentialMutex);
-        auto it = g_credentials.find(appId);
-        if (it != g_credentials.end() && it->second.appTicketLoaded) {
-            const uint64_t extracted = ExtractSteamIdFromTicketData(
-                it->second.appTicket.data(), it->second.appTicket.size());
-            if (extracted != 0) {
-                steamId = extracted;
-                OSTP_LOG_DEBUG("SteamCredentialStore: read Ticket SteamID (memory) for appid={} steamid={}", appId, steamId);
-                return Status::Ok;
-            }
-            return Status::NotFound;
-        }
-    }
-
-    std::vector<uint8_t> ticket;
-    const auto status = GetAppTicket(appId, ticket);
-    if (status == Status::Ok) {
-        const uint64_t extracted = ExtractSteamIdFromTicketData(ticket.data(), ticket.size());
+    std::shared_lock lock(g_credentialMutex);
+    auto it = g_credentials.find(appId);
+    if (it != g_credentials.end() && !it->second.appTicket.empty()) {
+        const uint64_t extracted = ExtractSteamIdFromTicketData(
+            it->second.appTicket.data(), it->second.appTicket.size());
         if (extracted != 0) {
             steamId = extracted;
+            OSTP_LOG_DEBUG("SteamCredentialStore: read Ticket SteamID (memory) for appid={} steamid={}", appId, steamId);
             return Status::Ok;
         }
     }

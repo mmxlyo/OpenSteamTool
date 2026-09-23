@@ -56,10 +56,10 @@
 
 ### 兼容 Denuvo 和 SteamStub 保护的游戏
 - 仅 SteamStub 保护的游戏不需要配置 `AppTicket`。OpenSteamTool 通过 Steam 本地 ConfigStore 令牌伪造 AppId，无需注入游戏进程
-- Denuvo 保护的游戏仍需凭据数据。所有凭据保存在 `<Steam或便携目录>/config/credentials/<AppId>/`（含 `AppTicket.bin`、`ETicket.bin`、`SteamID.txt`），不再写入 Windows 注册表
-- **显式设置票据**：在 Lua 配置中使用 `setAppTicket(appid, "hex")` 和 `setETicket(appid, "hex")`。`AppTicket` 本身已内嵌 SteamID，使用票据时**不需要**配置 `SteamID.txt`。彻底删除对应 Lua 脚本时，该凭据目录会自动清理
+- Denuvo 保护的游戏仍需凭据数据。切号授权凭据保存在 `<Steam或便携目录>/config/credentials/<AppId>/SteamID.txt`，不再写入 Windows 注册表
+- **显式设置票据**：在 Lua 配置中使用 `setAppTicket(appid, "hex")` 和 `setETicket(appid, "hex")`。票据直接在内存中管理，无需生成磁盘 bin 文件，注释或移除配置即可自动失效，彻底避免与切号授权冲突。`AppTicket` 本身已内嵌 SteamID，使用票据时**不需要**配置 `SteamID.txt`
 - **切号离线授权**：拥有游戏的账号在线启动通过验证后，系统会自动保存该账号的 `SteamID.txt`。切换到无游戏的账号即可
-- **SteamID 优先级与 Error 54**：优先读取 `AppTicket` 内嵌的 SteamID；若无显式票据，再读取 `SteamID.txt`。若 SteamID 与票据不匹配，Denuvo 将报错误代码 54 (`k_EResultDiskFull`)
+- **SteamID 优先级与 Error 54**：优先读取内存中 `AppTicket` 内嵌的 SteamID；若未配置显式票据（如已在 Lua 中注释），自动回退读取 `SteamID.txt`。若 SteamID 与票据不匹配，Denuvo 将报错误代码 54 (`k_EResultDiskFull`)
 - Denuvo 令牌存在时效性或硬件绑定。若授权失败显示错误代码 `88500005`，请重新提取并刷新 Lua 配置中的票据数据
 
 ### 使用 `extract_tickets` 提取授权与配置文件
@@ -121,8 +121,8 @@ addtoken(1361510,"2764735786934684318") -- 为 appid 为 1361510 的游戏添加
 setManifestid(1361511,"5656605350306673283") -- 固定 depotid:1361511 manifest_gid:5656605350306673283，大小默认为 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- 同上，但指定明确大小
 
-setAppTicket(1361510,"0100000000000000...") -- 将 AppTicket 写入凭据存储（config/credentials/1361510/AppTicket.bin）
-setETicket(1361510,"0100000000000000...")   -- 将 ETicket 写入凭据存储（config/credentials/1361510/ETicket.bin）
+setAppTicket(1361510,"0100000000000000...") -- 将 AppTicket 存入内存凭据存储
+setETicket(1361510,"0100000000000000...")   -- 将 ETicket 存入内存凭据存储
 
 setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用于 appid 1361510
 -- 若未配置，启用时使用 stats API；否则使用默认 SteamID 76561198028121353
