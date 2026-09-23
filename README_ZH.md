@@ -201,11 +201,11 @@ C++ 运行时提供两个 Lua 辅助函数：
 
 ### Steam 版本兼容性
 
-OpenSteamTool 不再在 DLL 中内置字节模式签名。相反，每次启动时它计算磁盘上 `steamclient64.dll` 和 `steamui.dll` 的 SHA-256，并从上游跟踪器 [`OpenSteam001/steam-monitor`](https://github.com/OpenSteam001/steam-monitor)（`pattern` 分支）查找匹配的模式文件
+OpenSteamTool 不再在 DLL 中内置字节模式签名。相反，每次启动时它计算磁盘上 `steamclient64.dll` 和 `steamui.dll` 的 SHA-256，并从上游跟踪器 [`mmxlyo/steam-monitor`](https://github.com/mmxlyo/steam-monitor)（`pattern` 分支）查找匹配的模式文件
 
 查找顺序（每次启动）：
 
-1. **GitHub raw** — `https://raw.githubusercontent.com/OpenSteam001/steam-monitor/pattern/...`。规范来源
+1. **GitHub raw** — `https://raw.githubusercontent.com/mmxlyo/steam-monitor/pattern/...`。规范来源
 2. **jsDelivr CDN** — 如果 GitHub raw 无法访问（连接拒绝/超时/5xx）时自动回退。无需配置。在 `raw.githubusercontent.com` 被封锁但 jsDelivr 可访问的地区很有用（如中国大陆）
 3. **本地缓存** — `<Steam>\opensteamtool\pattern\<subdir>\<sha256>.toml`。仅当远程不可达时使用。每次成功远程获取后覆盖缓存
 
@@ -226,7 +226,7 @@ OpenSteamTool 不再在 DLL 中内置字节模式签名。相反，每次启动�
 ```toml
 [remote]
 url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
-# url_template = "https://fast.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/{component}/{sha256}.toml"
+# url_template = "https://fast.jsdelivr.net/gh/mmxlyo/steam-monitor@{channel}/{component}/{sha256}.toml"
 ```
 
 ### 调试日志
