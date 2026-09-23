@@ -31,20 +31,24 @@ namespace {
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
 
-        // Spoof whenever we have a pool-account ticket for this app, not just
-        // inside the Denuvo auth window. Denuvo reads its cached offline
-        // license on second launch and calls GetSteamID BEFORE or AFTER the
-        // auth window to verify it — if we only spoof inside the window the
-        // real SteamID leaks out and mismatches the license → 012.
-        // GetSpoofSteamID returns 0 for apps with no credential-store ticket
-        // (real owners, non-tracked apps) so the spoof is naturally scoped.
+        // Only spoof SteamID when the pipe belongs to a Denuvo process currently
+        // within its adaptive authorization window (startup grace period or ticket lease).
+        // Outside the authorization window, the user's real SteamID is preserved so that
+        // save paths (ISteamUser::GetUserDataFolder / userdata/<RealAccountID>/) remain
+        // bound to the user's actual account rather than the pool account.
+        if (!PipeManager::DenuvoAuth::IsAuthorizedPipe(pipe)) {
+            LOG_IPC_TRACE("IClientUser::GetSteamID: AppId={} outside auth window, keeping real SteamID {}",
+                          appId, resp.DebugString());
+            return;
+        }
+
         const uint64 spoofed = AppTicket::GetSpoofSteamID(appId);
         if (!spoofed) {
             return;
         }
 
-        LOG_IPC_DEBUG("IClientUser::GetSteamID: AppId={} Original: {} -> Spoofed: 0x{:X}({})", 
-                        appId,resp.DebugString(),spoofed, spoofed);
+        LOG_IPC_DEBUG("IClientUser::GetSteamID: AppId={} [Auth-Window Active] Original: {} -> Spoofed: 0x{:X}({})", 
+                      appId, resp.DebugString(), spoofed, spoofed);
         resp.set_returnValue(spoofed);
     }
 
@@ -60,6 +64,9 @@ namespace {
         AppTicket::AppOwnershipTicket ticket{};
         AppId_t appId = req.unAppID() == kOnlineFixAppId ? Hooks_Misc::ResolveAppId() : req.unAppID();
         if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
+
+        // Refresh the Denuvo authorization lease window when an ownership ticket is requested.
+        PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
         
         AppTicket::AppTicketSource ticketSource;
         if (PipeManager::DenuvoAuth::IsAuthorizedPipe(pipe)) {
@@ -115,6 +122,9 @@ namespace {
         AppId_t appId = Hooks_Misc::ResolveAppId();
         if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
 
+        // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
+        PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
+
         bool haveFresh = false;
         // Strict Denuvo passes a per-launch nonce (pData) here and rejects a
         // stale/cached ticket (88500012). Try an on-demand mint bound to that
@@ -165,6 +175,9 @@ namespace {
     {
         AppId_t appId = Hooks_Misc::ResolveAppId();
         if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
+
+        // Refresh the Denuvo authorization lease window when reading the encrypted ticket.
+        PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
 
         // Prefer a fresh nonce-bound ticket minted in RequestEncryptedAppTicket;
         // fall back to the static credential-store ticket (titles that don't
