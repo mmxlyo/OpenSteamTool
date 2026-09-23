@@ -113,8 +113,8 @@ int Run(int argc, char** argv) {
             encrypted = ExtractEncryptedAppTicket(client, pipe, user, *appId);
             if (encrypted) PrintHex("Encrypted ticket", *encrypted);
         } else {
-            std::cout << "[INFO] 未安装游戏已在安全模式下跳过 ETicket 提取 (Lua 将自动保留模板并标记为 null)。\n"
-                      << "       Safe mode skipped ETicket extraction for uninstalled app (marked as null in Lua).\n";
+            std::cout << "[INFO] 未安装游戏已在安全模式下跳过 ETicket 提取 (Lua 将保留模板并自动注释票据项)。\n"
+                      << "       Safe mode skipped ETicket extraction for uninstalled app (ticket entries commented out in Lua).\n";
         }
     }
 
