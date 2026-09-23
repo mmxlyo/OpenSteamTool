@@ -83,7 +83,7 @@ The `extract_tickets` tool extracts authorization tickets (`AppTicket` / `ETicke
 - Priority: `setStat` > stats API when enabled and valid > hardcoded preset SteamID `76561198028121353`.
 
 ### Online Fix
-- Add `-onlinefix` to the Steam launch parameters to enable 480-based online play in games that use lobby matchmaking. The current limitation is that only one such game can run at a time.To revert, simply remove -onlinefix from the launch parameters — online play returns to normal on the next launch.
+- Add `-onlinefix` to the Steam launch parameters to enable 480-based online multiplayer (or `-onlinefix -p2pflip` for rare games requiring cert match). Only one such game can run at a time. To revert, simply remove the launch parameter.
 
 ## Future
 - Steam Cloud synchronization support.(This is a huge project)
@@ -130,8 +130,8 @@ setStat(1361510, "76561197960287930") -- use the specified SteamID's achievement
 All function names are **case-insensitive**. `setAppTicket`, `setappticket`, `SetAppticket`, `SETAPPTICKET` etc. are all equivalent. The same applies to every registered function (`addAppId`, `AddToken`, `SETManifestid`, etc.).
 
 ### Online Fix
-- Add `-onlinefix` to the Steam launch parameters to enable 480-based online play in games that use lobby matchmaking. Only one such game can run at a time. To revert, simply remove `-onlinefix` from the launch parameters.
-- Add `-realappid` alongside `-onlinefix` (i.e. `-onlinefix -realappid`) if the game crashes, exits, hangs, or black-screens on startup or after login.
+- Add `-onlinefix` to the Steam launch parameters to enable 480 (Spacewar) online multiplayer. Real saves and AppIDs are preserved automatically with no extra flags needed. Only one such game can run at a time. To revert, simply remove `-onlinefix` from the launch parameters.
+- A tiny minority of games that fail to find lobbies due to strict 480 certificate checks may use `-onlinefix -p2pflip`. Note: This option has known compatibility issues (can cause black screens, crashes, or misplaced saves in certain titles) — only use it when strictly necessary.
 
 ### Configuration (optional)
 

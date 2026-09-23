@@ -78,8 +78,8 @@ La herramienta `extract_tickets` extrae tickets de autorización (`AppTicket` / 
 - Si no hay ningún `setStat` configurado para una aplicación, OpenSteamTool consulta `https://stats.opensteamtool.com/{appid}` cuando `[stats] enable_api = true` (valor predeterminado).
 - Prioridad: `setStat` > API de estadísticas cuando está habilitada y devuelve un valor válido > SteamID predefinido `76561198028121353`.
 
-### Online Fix(Reparacion para habilitar el Online)
-- Añade `-onlinefix` a los parámetros de lanzamiento de Steam para habilitar el juego en línea basado en el AppId 480 en juegos que utilizan emparejamiento (matchmaking) por salas (lobbies). La limitación actual es que solo se puede ejecutar uno de estos juegos a la vez. Para revertirlo, simplemente elimina -onlinefix de los parámetros de lanzamiento; el juego en línea volverá a la normalidad en el próximo inicio.
+### Online Fix (Reparacion para habilitar el Online)
+- Añade `-onlinefix` a los parámetros de lanzamiento de Steam para habilitar el juego en línea basado en 480 (o `-onlinefix -p2pflip` para casos raros que requieran coincidencia de certificados). Solo se puede ejecutar un juego de este tipo a la vez. Para revertirlo, simplemente elimina el parámetro de lanzamiento.
 
 ## Futuro
 - Soporte para la sincronización con Steam Cloud (este es un proyecto enorme).
@@ -126,8 +126,8 @@ setStat(1361510, "76561197960287930") -- utiliza los datos de logros del SteamID
 Los nombres de todas las funciones **no distinguen entre mayúsculas y minúsculas**. `setAppTicket`, `setappticket`, `SetAppticket`, `SETAPPTICKET`, etc., son todas equivalentes. Lo mismo se aplica a cada función registrada (`addAppId`, `AddToken`, `SETManifestid`, etc.).
 
 ### Reparación en línea (Online Fix)
-- Añade `-onlinefix` a los parámetros de lanzamiento de Steam para habilitar el juego en línea basado en 480 (Spacewar) en juegos que usan emparejamiento por salas. Solo se puede ejecutar un juego de este tipo a la vez. Para revertirlo, simplemente elimina `-onlinefix` de los parámetros de lanzamiento.
-- Añade `-realappid` junto a `-onlinefix` (es decir, `-onlinefix -realappid`) si el juego se cierra inesperadamente, muestra errores, se bloquea o queda en pantalla negra al inicio o tras iniciar sesión.
+- Añade `-onlinefix` a los parámetros de lanzamiento de Steam para habilitar el juego en línea basado en 480 (Spacewar). Las partidas guardadas y los AppID reales se conservan automáticamente sin parámetros adicionales. Solo se puede ejecutar un juego de este tipo a la vez. Para revertirlo, simplemente elimina `-onlinefix` de los parámetros de lanzamiento.
+- Para una mínima cantidad de juegos que no encuentren salas por comprobaciones estrictas del certificado 480, se puede usar `-onlinefix -p2pflip`. Nota: Esta opción presenta problemas de compatibilidad (puede causar pantallas negras, cierres inesperados o rutas de guardado erróneas en ciertos títulos) — úsala solo si es estrictamente necesario.
 
 ### Configuración (opcional)
 Cambia el nombre de `opensteamtool.example.toml` a `opensteamtool.toml` y colócalo en el directorio raíz de Steam (junto a `steam.exe`).
