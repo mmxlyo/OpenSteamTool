@@ -423,4 +423,4 @@ struct CSteamApp
 	AppId_t ParentAppID;
 };
 #pragma pack(pop)
-static_assert(sizeof(CSteamApp) == 0x40, "CSteamApp must be 64 bytes to match steamclient64");
+static_assert(sizeof(CSteamApp) == (sizeof(void*) == 8 ? 0x44 : 0x40), "CSteamApp size mismatch");
