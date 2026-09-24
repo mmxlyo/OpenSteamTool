@@ -304,11 +304,8 @@ namespace
 
                 for (AppId_t parentId : parentsToNotify)
                 {
-                    if (std::ranges::find(draining, parentId) == draining.end())
-                    {
-                        LOG_STEAMUI_INFO("RunFrame: notifying parent appId {} of DLC change", parentId);
-                        oMarkAppChange(g_pAppChangeSource, parentId, EAppChangeFlags::AppInfoOrConfig);
-                    }
+                    LOG_STEAMUI_INFO("RunFrame: notifying parent appId {} of DLC change", parentId);
+                    oMarkAppChange(g_pAppChangeSource, parentId, EAppChangeFlags::AppInfoOrConfig);
                 }
 
                 if (!newlyRemoved.empty())

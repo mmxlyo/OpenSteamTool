@@ -64,16 +64,33 @@ namespace {
         // Inject all depots from config into the fake license. 
         std::vector<AppId_t> appIds = LuaConfig::GetAllDepotIds();
         if (!appIds.empty()) {
-            uint32 oldSize = pPkg->AppIdVec.m_Size;
-            uint32 numToAdd = static_cast<uint32>(appIds.size());
-            LOG_PACKAGE_INFO("InitFakeLicense(PackageId={}): adding {} apps, oldSize={}", kInjectedPackageId, numToAdd, oldSize);
-            if (!CUtlMemoryGrowWrap(&pPkg->AppIdVec, numToAdd)) {
-                LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): failed to grow AppId vector", kInjectedPackageId);
-                return false;
+            std::vector<AppId_t> toAdd;
+            toAdd.reserve(appIds.size());
+            for (AppId_t id : appIds) {
+                bool alreadyPresent = false;
+                for (uint32_t i = 0; i < pPkg->AppIdVec.m_Size; ++i) {
+                    if (pPkg->AppIdVec.m_Memory.m_pMemory[i] == id) {
+                        alreadyPresent = true;
+                        break;
+                    }
+                }
+                if (!alreadyPresent) {
+                    toAdd.push_back(id);
+                }
             }
-            for (uint32 i = 0; i < numToAdd; i++)
-                pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = appIds[i];
-            pPkg->AppIdVec.m_Size = oldSize + numToAdd;
+
+            if (!toAdd.empty()) {
+                uint32 oldSize = pPkg->AppIdVec.m_Size;
+                uint32 numToAdd = static_cast<uint32>(toAdd.size());
+                LOG_PACKAGE_INFO("InitFakeLicense(PackageId={}): adding {} apps, oldSize={}", kInjectedPackageId, numToAdd, oldSize);
+                if (!CUtlMemoryGrowWrap(&pPkg->AppIdVec, numToAdd)) {
+                    LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): failed to grow AppId vector", kInjectedPackageId);
+                    return false;
+                }
+                for (uint32 i = 0; i < numToAdd; i++)
+                    pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = toAdd[i];
+                pPkg->AppIdVec.m_Size = oldSize + numToAdd;
+            }
         }
 
         g_licenseInitialized.store(true, std::memory_order_release);
@@ -194,7 +211,9 @@ namespace Hooks_Package {
                 toAdd.reserve(additions.size());
                 for (AppId_t id : additions) {
                     Hooks_SteamUI::CancelRemoval(id);
-                    addedIds.insert(id);
+                    if (!addedIds.insert(id).second) {
+                        continue;
+                    }
 
                     bool alreadyPresent = false;
                     for (uint32_t i = 0; i < pPkg->AppIdVec.m_Size; ++i) {
@@ -209,7 +228,7 @@ namespace Hooks_Package {
                 }
 
                 if (!toAdd.empty()) {
-                    uint32_t oldSize = pPkg->AppIdVec.m_Size;
+                    uint32 oldSize = pPkg->AppIdVec.m_Size;
                     if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, static_cast<int>(toAdd.size()))) {
                         for (size_t i = 0; i < toAdd.size(); ++i) {
                             pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = toAdd[i];
@@ -238,10 +257,11 @@ namespace Hooks_Package {
         // Queue UI removals for the main-thread RunFrame hook to drain.
         // Never touch MarkAppChange from this (FileWatcher) thread.
         size_t queuedRemovalCount = 0;
+        std::unordered_set<AppId_t> queuedRemovals;
         for (AppId_t id : removals) {
             // ParseFile unloads the old file before parsing the replacement.
             // Do not queue that transient removal when the id was added again.
-            if (!addedIds.contains(id)) {
+            if (!addedIds.contains(id) && queuedRemovals.insert(id).second) {
                 Hooks_SteamUI::QueueRemoval(id);
                 ++queuedRemovalCount;
             }
