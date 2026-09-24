@@ -45,8 +45,10 @@ namespace LuaConfig{
     static std::unordered_map<std::string, AppId_t> ProcessNameAppIdMap{};
     // App IDs that should bypass ProtectionScan and be treated as Denuvo games.
     static std::unordered_set<AppId_t> ForcedDenuvoSet{};
+    static std::unordered_set<AppId_t> g_cmdLineForcedDenuvo{};
     // App IDs that should bypass ProtectionScan and be treated as non-Denuvo games.
     static std::unordered_set<AppId_t> NoDenuvoSet{};
+    static std::unordered_set<AppId_t> g_cmdLineNoDenuvo{};
     // On-demand eticket mint endpoint, set via seteticketurl() in Lua config.
     // Empty = disabled (EticketClient falls back to credential-store ticket).
     static std::string EticketUrl{};
@@ -718,12 +720,32 @@ namespace LuaConfig{
 
     bool IsForcedDenuvo(AppId_t appId) {
         std::shared_lock lock(g_configSharedMutex);
-        return ForcedDenuvoSet.count(appId) > 0;
+        return ForcedDenuvoSet.count(appId) > 0 || g_cmdLineForcedDenuvo.count(appId) > 0;
+    }
+
+    void SetCmdLineForcedDenuvo(AppId_t appId, bool active) {
+        if (appId == 0 || appId == k_uAppIdInvalid) return;
+        std::unique_lock lock(g_configSharedMutex);
+        if (active) {
+            g_cmdLineForcedDenuvo.insert(appId);
+        } else {
+            g_cmdLineForcedDenuvo.erase(appId);
+        }
     }
 
     bool IsNoDenuvo(AppId_t appId) {
         std::shared_lock lock(g_configSharedMutex);
-        return NoDenuvoSet.count(appId) > 0;
+        return NoDenuvoSet.count(appId) > 0 || g_cmdLineNoDenuvo.count(appId) > 0;
+    }
+
+    void SetCmdLineNoDenuvo(AppId_t appId, bool active) {
+        if (appId == 0 || appId == k_uAppIdInvalid) return;
+        std::unique_lock lock(g_configSharedMutex);
+        if (active) {
+            g_cmdLineNoDenuvo.insert(appId);
+        } else {
+            g_cmdLineNoDenuvo.erase(appId);
+        }
     }
 
     std::string GetEticketUrl() {

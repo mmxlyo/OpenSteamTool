@@ -56,6 +56,8 @@
 - **Autorización offline al cambiar de cuenta**: Cuando una cuenta que posee el juego inicia en línea y pasa la verificación, el sistema guarda automáticamente su `SteamID.txt`. Basta con cambiar a una cuenta sin el juego.
 - **Prioridad de SteamID y Error 54**: El SteamID del `AppTicket` en memoria tiene prioridad; si no hay ticket explícito configurado (por ejemplo, comentado en Lua), se lee automáticamente `SteamID.txt`. Si el SteamID no coincide con el ticket, Denuvo devolverá el Error 54 (`k_EResultDiskFull`).
 - Los tokens de Denuvo pueden caducar. Si la autorización falla con el error `88500005`, vuelve a extraer y actualiza los datos del ticket en la configuración Lua.
+- **Control de bloqueo de manifiestos y actualizaciones oficiales (`lock_manifest` / `-nodenuvo` / `noDenuvo`)**: Al sincronizar la autorización offline en una cuenta autorizada o con `-d+`, OpenSteamTool bloquea de forma predeterminada los manifiestos en `<AppId>.lua` (`setManifestid`) para evitar que las actualizaciones silenciosas de Steam invaliden los tokens offline de Denuvo. Si posees el juego de forma oficial y deseas que Steam detecte y descargue actualizaciones con normalidad, puedes configurar `[denuvo] lock_manifest = false` en `opensteamtool.toml` (ajuste global: escribe `setManifestid` como comentarios y omite el espejado de manifiestos); o bien agregar `-nodenuvo` en los parámetros de lanzamiento de Steam (o configurar `noDenuvo(appid)` en Lua) para omitir por completo el escaneo de Denuvo y la sincronización offline de ese título.
+- **Identificación forzada de Denuvo (`-forcedenuvo` / `forcedenuvo`)**: Para juegos con empaquetado no estándar donde el escaneo heurístico automático no detecte Denuvo, puedes agregar `-forcedenuvo` en los parámetros de lanzamiento de Steam o configurar `forcedenuvo(appid)` en Lua para forzar su procesamiento como juego protegido por Denuvo.
 
 ### Extracción de tickets y configuración con `extract_tickets`
 
@@ -121,9 +123,12 @@ setETicket(1361510,"0100000000000000...")   -- almacena ETicket en el almacenami
 
 setStat(1361510, "76561197960287930") -- utiliza los datos de logros del SteamID especificado para el appid 1361510
 -- Si no se configura, se utiliza la API de estadísticas cuando está habilitada; de lo contrario se usa el SteamID por defecto 76561198028121353.
+
+nodenuvo(1361510) -- marca explícitamente appid 1361510 como no Denuvo, omitiendo el escaneo y la sincronización (también mediante -nodenuvo)
+forcedenuvo(1361510) -- fuerza el marcado de appid 1361510 como juego con Denuvo (también mediante -forcedenuvo)
 ```
 
-Los nombres de todas las funciones **no distinguen entre mayúsculas y minúsculas**. `setAppTicket`, `setappticket`, `SetAppticket`, `SETAPPTICKET`, etc., son todas equivalentes. Lo mismo se aplica a cada función registrada (`addAppId`, `AddToken`, `SETManifestid`, etc.).
+Los nombres de todas las funciones **no distinguen entre mayúsculas y minúsculas**. `setAppTicket`, `setappticket`, `nodenuvo`, `forcedenuvo`, `noDenuvo`, `SETManifestid`, etc., son todas equivalentes. Lo mismo se aplica a cada función registrada (`addAppId`, `AddToken`, `SETManifestid`, etc.).
 
 ### Reparación en línea (Online Fix)
 - Añade `-onlinefix` a los parámetros de lanzamiento de Steam para habilitar el juego en línea basado en 480 (Spacewar). Las partidas guardadas y los AppID reales se conservan automáticamente sin parámetros adicionales. Solo se puede ejecutar un juego de este tipo a la vez. Para revertirlo, simplemente elimina `-onlinefix` de los parámetros de lanzamiento.
@@ -170,6 +175,15 @@ enabled = false
 # Espejo (mirror) de metadatos opcional. Consulta "Compatibilidad con versiones de Steam" más abajo.
 [remote]
 # url_template = "https://tu.servidor/{channel}/{component}/{sha256}.toml"
+
+[denuvo]
+# Determina si se bloquean los manifiestos en <AppId>.lua (setManifestid) al sincronizar la autorización offline
+# en una cuenta autorizada o con -d+.
+# true  (por defecto) -> Bloquea los GID instalados para evitar que las actualizaciones silenciosas de Steam
+#                        invaliden los tokens offline de Denuvo.
+# false               -> Escribe setManifestid como comentarios (-- setManifestid) y omite el espejado de manifiestos,
+#                        permitiendo que Steam detecte y descargue actualizaciones oficiales normalmente.
+lock_manifest = true
 ```
 ### Manifiest a través de Lua
 

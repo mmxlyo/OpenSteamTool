@@ -52,13 +52,19 @@ namespace LuaConfig{
     // export SteamAppId (e.g. launcher-spawned child processes).
     AppId_t GetAppIdForProcess(const std::string& imageName);
 
-    // Returns true if the appid was marked via forcedenuvo(), bypassing
-    // ProtectionScan in DenuvoAuth (for games where the heuristic fails).
+    // Returns true if the appid was marked via forcedenuvo(), or launched with -forcedenuvo,
+    // bypassing ProtectionScan in DenuvoAuth (for games where the heuristic fails).
     bool IsForcedDenuvo(AppId_t appId);
 
+    // Records whether -forcedenuvo command-line launch argument was passed for appId.
+    void SetCmdLineForcedDenuvo(AppId_t appId, bool active);
+
     // Returns true if the appid was marked via nodenuvo() / disallowdenuvo(),
-    // completely skipping ProtectionScan and Denuvo authorization.
+    // or launched with -nodenuvo, completely skipping ProtectionScan and Denuvo authorization.
     bool IsNoDenuvo(AppId_t appId);
+
+    // Records whether -nodenuvo command-line launch argument was passed for appId.
+    void SetCmdLineNoDenuvo(AppId_t appId, bool active);
 
     // On-demand eticket backend URL set via seteticketurl() in Lua config.
     // Empty string means the feature is disabled and EticketClient falls

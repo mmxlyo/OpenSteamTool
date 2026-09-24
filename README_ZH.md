@@ -61,6 +61,8 @@
 - **切号离线授权**：拥有游戏的账号在线启动通过验证后，系统会自动保存该账号的 `SteamID.txt`。切换到无游戏的账号即可
 - **SteamID 优先级与 Error 54**：优先读取内存中 `AppTicket` 内嵌的 SteamID；若未配置显式票据（如已在 Lua 中注释），自动回退读取 `SteamID.txt`。若 SteamID 与票据不匹配，Denuvo 将报错误代码 54 (`k_EResultDiskFull`)
 - Denuvo 令牌存在时效性或硬件绑定。若授权失败显示错误代码 `88500005`，请重新提取并刷新 Lua 配置中的票据数据
+- **清单锁定与官方更新控制 (`lock_manifest` / `-nodenuvo` / `noDenuvo`)**：切号授权或使用 `-d+` 同步时，OpenSteamTool 默认会在 `<AppId>.lua` 中写入活跃的 `setManifestid` 锁定已安装清单版本，防止 Steam 静默更新破坏 Denuvo 离线授权。若为您自己的正版账号且希望 Steam 正常检测与下载官方更新补丁，可在 `opensteamtool.toml` 中配置 `[denuvo] lock_manifest = false`（全局设置：以注释态 `-- setManifestid` 写入并跳过清单镜像）；或者针对特定游戏在 Steam 属性启动选项中添加 `-nodenuvo`（或在 Lua 中配置 `noDenuvo(appid)`），将彻底跳过该游戏的 Denuvo 检测与清单同步逻辑。
+- **强制 Denuvo 识别 (`-forcedenuvo` / `forcedenuvo`)**：若某些游戏由于加壳特殊导致自动特征扫描未能识别 Denuvo，可在 Steam 属性启动选项中加入 `-forcedenuvo` 或在 Lua 中配置 `forcedenuvo(appid)`，强制将其作为 Denuvo 保护游戏处理并执行授权同步逻辑。
 
 ### 使用 `extract_tickets` 提取授权与配置文件
 
@@ -126,9 +128,12 @@ setETicket(1361510,"0100000000000000...")   -- 将 ETicket 存入内存凭据存
 
 setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用于 appid 1361510
 -- 若未配置，启用时使用 stats API；否则使用默认 SteamID 76561198028121353
+
+nodenuvo(1361510) -- 显式标记 appid 1361510 为非 Denuvo 游戏，跳过保护扫描与清单同步（启动选项中加 -nodenuvo 亦可）
+forcedenuvo(1361510) -- 强制将 appid 1361510 标记为 Denuvo 保护游戏（启动选项中加 -forcedenuvo 亦可）
 ```
 
-所有函数名**不区分大小写**。`setAppTicket`、`setappticket`、`SetAppticket`、`SETAPPTICKET` 等都是等价的。每个注册的函数都适用（`addAppId`、`AddToken`、`SETManifestid` 等）。
+所有函数名**不区分大小写**。`setAppTicket`、`setappticket`、`nodenuvo`、`forcedenuvo`、`noDenuvo`、`SETManifestid` 等都是等价的。每个注册的函数都适用（`addAppId`、`AddToken`、`SETManifestid` 等）。
 
 ### 联机修复 (Online Fix)
 - 在 Steam 启动选项中添加 `-onlinefix`，即可启用基于 480 (Spacewar) 的在线联机功能，默认自动保护真实存档且无需额外参数。同一时间只能运行一个此类游戏。若要还原，直接移除 `-onlinefix` 即可。
@@ -176,6 +181,13 @@ enabled = false
 # 可选元数据镜像。参见下面的"Steam 版本兼容性"
 [remote]
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
+
+[denuvo]
+# 切号授权或使用 -d+ 同步时，是否在 <AppId>.lua 中激活 setManifestid 锁定清单。
+# true  (默认)  → 写入活跃的 setManifestid 锁定已安装版本 GID，防止 Steam 静默更新破坏 Denuvo 离线授权。
+# false         → 所有 setManifestid 以注释态 (-- setManifestid) 写入并跳过清单镜像，
+#                 允许 Steam 客户端正常检测并自动下载官方更新补丁。
+lock_manifest = true
 ```
 
 ### 通过 Lua 获取 Manifest

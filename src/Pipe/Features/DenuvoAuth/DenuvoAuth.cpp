@@ -5,6 +5,8 @@
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Pipe/ProcessInspector.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
+#include "OSTPlatform/include/Process.h"
 #include "OSTPlatform/include/SteamCredentialStore.h"
 #include "OSTPlatform/include/Encoding.h"
 #include <algorithm>
@@ -183,12 +185,29 @@ void Apply(const PipeContext& ctx) {
 
     bool denuvo = false;
     if (needsScan) {
-        if (LuaConfig::IsNoDenuvo(ctx.appId)) {
+        bool isNoDenuvo = LuaConfig::IsNoDenuvo(ctx.appId);
+        bool isForcedDenuvo = LuaConfig::IsForcedDenuvo(ctx.appId);
+
+        if (!isNoDenuvo && !isForcedDenuvo && ctx.process.pid != 0) {
+            if (const auto cmd = OSTPlatform::Process::GetProcessCommandLine(ctx.process.pid)) {
+                if (HasNoDenuvoArg(cmd->c_str())) {
+                    isNoDenuvo = true;
+                    LuaConfig::SetCmdLineNoDenuvo(ctx.appId, true);
+                    LOG_PIPE_INFO("DenuvoAuth: detected -nodenuvo in process command line for appid={}", ctx.appId);
+                } else if (HasForcedDenuvoArg(cmd->c_str())) {
+                    isForcedDenuvo = true;
+                    LuaConfig::SetCmdLineForcedDenuvo(ctx.appId, true);
+                    LOG_PIPE_INFO("DenuvoAuth: detected -forcedenuvo in process command line for appid={}", ctx.appId);
+                }
+            }
+        }
+
+        if (isNoDenuvo) {
             denuvo = false;
             LOG_PIPE_INFO("DenuvoAuth: nodenuvo appid={} — skipping ProtectionScan and forcing non-Denuvo", ctx.appId);
-        } else if (LuaConfig::IsForcedDenuvo(ctx.appId)) {
+        } else if (isForcedDenuvo) {
             denuvo = true;
-            LOG_PIPE_INFO("DenuvoAuth: forcedenuvo appid={} — skipping ProtectionScan", ctx.appId);
+            LOG_PIPE_INFO("DenuvoAuth: forcedenuvo appid={} — skipping ProtectionScan and forcing Denuvo", ctx.appId);
         } else {
             denuvo = ScanProtection(ctx.process.pid).denuvoDetected;
         }

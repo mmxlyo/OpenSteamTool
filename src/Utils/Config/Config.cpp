@@ -22,6 +22,7 @@ namespace {
         bool statsEnableApi = true;
         std::vector<InjectDll> injectDlls;
         CloudSettings cloud;
+        bool denuvoLockManifest = true;
     };
 
     std::mutex g_mutex;
@@ -39,6 +40,7 @@ namespace {
     std::vector<InjectDll> injectDlls;
     bool cloudEnabled = false;
     std::string cloudLibrary;
+    bool denuvoLockManifest = true;
 
     const char* ToString(LogLevel level) {
         switch (level) {
@@ -77,6 +79,7 @@ namespace {
         injectDlls             = snapshot.injectDlls;
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
+        denuvoLockManifest     = snapshot.denuvoLockManifest;
     }
 
     void ApplyManifestProvider(const std::string& provider) {
@@ -232,13 +235,23 @@ namespace {
                     snapshot.cloud.library = *val;
             }
 
+            // [denuvo]
+            if (auto denuvo = tbl["denuvo"].as_table()) {
+                if (auto val = (*denuvo)["lock_manifest"].value<bool>()) {
+                    snapshot.denuvoLockManifest = *val;
+                } else if (auto val2 = (*denuvo)["lock_manifests"].value<bool>()) {
+                    snapshot.denuvoLockManifest = *val2;
+                }
+            }
+
             ApplyManifestProvider(snapshot.manifestProvider);
             LoadResult result = ApplySnapshotLocked(snapshot);
-            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={}",
+            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} denuvo.lock_manifest={} remote.url_template={}",
                      ManifestClient::ActiveProviderName(),
                      ToString(snapshot.logLevel),
                      (uint32_t)snapshot.luaPaths.size(),
                      snapshot.statsEnableApi,
+                     snapshot.denuvoLockManifest,
                      snapshot.remoteUrlTemplate.empty() ? "<default>" : snapshot.remoteUrlTemplate);
             return result;
 
@@ -309,6 +322,11 @@ namespace {
     std::vector<InjectDll> GetInjectDlls() {
         std::lock_guard lock(g_mutex);
         return injectDlls;
+    }
+
+    bool GetDenuvoLockManifest() {
+        std::lock_guard lock(g_mutex);
+        return denuvoLockManifest;
     }
 
 }

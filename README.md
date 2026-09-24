@@ -60,6 +60,8 @@
 - **Account Switching Offline Auth**: When an account owning the game launches online and passes verification, OpenSteamTool automatically saves its `SteamID.txt`. Simply switch to an account without the game.
 - **SteamID Priority & Error 54**: The SteamID embedded in memory `AppTicket` takes priority; if no explicit ticket is configured (e.g. commented out in Lua), `SteamID.txt` is automatically used. A mismatch between the SteamID and ticket causes Denuvo Error 54 (`k_EResultDiskFull`).
 - Denuvo tokens may expire or be bound to hardware. If launch fails with Denuvo error `88500005`, re-extract and refresh the ticket data in the Lua config.
+- **Manifest Locking & Official Updates (`lock_manifest` / `-nodenuvo` / `noDenuvo`)**: When syncing offline authorization on an authorized account or using `-d+`, OpenSteamTool locks depot manifests (`setManifestid`) in `<AppId>.lua` by default to prevent silent Steam updates from breaking Denuvo offline tokens. If you own the game officially and want Steam to detect and download official updates normally, set `lock_manifest = false` in `opensteamtool.toml` (global setting: writes `setManifestid` as comments and skips manifest mirroring); or add `-nodenuvo` in Steam game launch options (or configure `noDenuvo(appid)` in Lua) to completely bypass Denuvo scanning and offline sync for that title.
+- **Forced Denuvo Identification (`-forcedenuvo` / `forcedenuvo`)**: For games with non-standard packing where automatic heuristics fail to detect Denuvo, add `-forcedenuvo` in Steam launch options or configure `forcedenuvo(appid)` in Lua to explicitly force OpenSteamTool to treat the game as Denuvo-protected.
 
 ### Extracting Tickets & Config with `extract_tickets`
 
@@ -125,9 +127,12 @@ setETicket(1361510,"0100000000000000...")   -- store ETicket in memory credentia
 
 setStat(1361510, "76561197960287930") -- use the specified SteamID's achievement data for appid 1361510
 -- If not configured, the stats API is used when enabled; otherwise default SteamID 76561198028121353 is used.
+
+nodenuvo(1361510) -- explicitly mark appid 1361510 as non-Denuvo, bypassing protection scan and sync (also via -nodenuvo)
+forcedenuvo(1361510) -- force mark appid 1361510 as Denuvo-protected (also via -forcedenuvo)
 ```
 
-All function names are **case-insensitive**. `setAppTicket`, `setappticket`, `SetAppticket`, `SETAPPTICKET` etc. are all equivalent. The same applies to every registered function (`addAppId`, `AddToken`, `SETManifestid`, etc.).
+All function names are **case-insensitive**. `setAppTicket`, `setappticket`, `nodenuvo`, `forcedenuvo`, `noDenuvo`, `SETManifestid` etc. are all equivalent. The same applies to every registered function (`addAppId`, `AddToken`, `SETManifestid`, etc.).
 
 ### Online Fix
 - Add `-onlinefix` to the Steam launch parameters to enable 480 (Spacewar) online multiplayer. Real saves and AppIDs are preserved automatically with no extra flags needed. Only one such game can run at a time. To revert, simply remove `-onlinefix` from the launch parameters.
@@ -187,6 +192,14 @@ enabled = false
 # Optional metadata mirror. See "Steam version compatibility" below.
 [remote]
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
+
+[denuvo]
+# Whether to lock depot manifests in <AppId>.lua (setManifestid) when synchronizing
+# offline authorization on an authorized account or with -d+.
+# true  (default) -> Writes active setManifestid to lock installed GIDs, protecting Denuvo offline tokens.
+# false           -> Writes setManifestid as comments (-- setManifestid) and skips manifest mirroring,
+#                    allowing Steam to detect and download official updates normally.
+lock_manifest = true
 ```
 
 ### Third-party DLL injection

@@ -6,6 +6,7 @@
 #include "Steam/Types.h"
 
 #include <cstddef>
+#include <filesystem>
 #include <format>
 #include <string>
 

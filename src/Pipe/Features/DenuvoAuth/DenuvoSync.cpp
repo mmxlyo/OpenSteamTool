@@ -7,11 +7,13 @@
 #include "OSTPlatform/include/Encoding.h"
 #include "Steam/Structs.h"
 #include "Steam/Enums.h"
+#include "Utils/Config/Config.h"
 #include "dllmain.h"
 
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -23,6 +25,38 @@
 #include <windows.h>
 
 namespace PipeManager::DenuvoAuth {
+
+    bool HasCmdLineArg(const char* cmdLine, const char* arg) {
+        if (!cmdLine || !arg) return false;
+        const size_t argLen = strlen(arg);
+        if (argLen == 0) return false;
+
+        for (const char* p = cmdLine; *p; ++p) {
+            // Fast token boundary check: token must begin at string start or after whitespace/quotes
+            if (p == cmdLine || *(p - 1) == ' ' || *(p - 1) == '\t' || *(p - 1) == '"' || *(p - 1) == '\'') {
+                if (_strnicmp(p, arg, argLen) == 0) {
+                    const char next = p[argLen];
+                    if (next == '\0' || next == ' ' || next == '\t' || next == '"' || next == '\'' || next == '=') {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    bool HasNoDenuvoArg(const char* cmdLine) {
+        return cmdLine && (HasCmdLineArg(cmdLine, "-nodenuvo") ||
+                           HasCmdLineArg(cmdLine, "-no-denuvo") ||
+                           HasCmdLineArg(cmdLine, "-no_denuvo"));
+    }
+
+    bool HasForcedDenuvoArg(const char* cmdLine) {
+        return cmdLine && (HasCmdLineArg(cmdLine, "-forcedenuvo") ||
+                           HasCmdLineArg(cmdLine, "-force-denuvo") ||
+                           HasCmdLineArg(cmdLine, "-force_denuvo"));
+    }
+
 namespace {
 
     std::mutex g_dPlusMutex;
@@ -53,22 +87,6 @@ namespace {
         virtual void* GetISteamMatchmakingServers(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
         virtual void* GetISteamGenericInterface(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
     };
-
-    bool HasCmdLineArg(const char* cmdLine, const char* arg) {
-        if (!cmdLine || !arg) return false;
-        const size_t argLen = strlen(arg);
-        for (const char* p = cmdLine; *p; ++p) {
-            if (_strnicmp(p, arg, argLen) == 0) {
-                if (p == cmdLine || *(p - 1) == ' ' || *(p - 1) == '\t' || *(p - 1) == '"') {
-                    const char next = p[argLen];
-                    if (next == '\0' || next == ' ' || next == '\t' || next == '"' || next == '=') {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
 
     std::string_view TrimWhitespace(std::string_view str) noexcept {
         while (!str.empty() && std::isspace(static_cast<unsigned char>(str.front()))) {
@@ -474,12 +492,27 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
     if (appId == 0 || appId == k_uAppIdInvalid) return;
 
     const bool hasDPlus = cmdLine && HasCmdLineArg(cmdLine, "-d+");
+    const bool hasNoDenuvo = HasNoDenuvoArg(cmdLine);
+    const bool hasForcedDenuvo = HasForcedDenuvoArg(cmdLine);
     const bool hasLua = LuaConfig::HasDepot(appId, false);
 
+    LuaConfig::SetCmdLineNoDenuvo(appId, hasNoDenuvo);
+    LuaConfig::SetCmdLineForcedDenuvo(appId, hasForcedDenuvo);
+
+    if (hasNoDenuvo) {
+        LOG_INFO("DenuvoSync: -nodenuvo active for appId={} — skipping Denuvo sync and manifest locking", appId);
+        ClearDPlusLaunch(appId);
+        return;
+    }
+
+    if (hasForcedDenuvo) {
+        LOG_INFO("DenuvoSync: -forcedenuvo active for appId={}", appId);
+    }
+
     // 🛑 ABSOLUTE ZERO-OPERATION INVARIANT:
-    // If there is no Lua file configured and no -d+ launch argument,
+    // If there is no Lua file configured and neither -d+ nor -forcedenuvo is passed,
     // OST executes ABSOLUTELY ZERO operations. Pure vanilla pass-through!
-    if (!hasLua && !hasDPlus) {
+    if (!hasLua && !hasDPlus && !hasForcedDenuvo) {
         ClearDPlusLaunch(appId);
         return;
     }
@@ -492,12 +525,18 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
         ClearDPlusLaunch(appId);
     }
 
-    // Only genuine owners execute sync or package generation
-    if (LuaConfig::IsOwned(appId) || hasDPlus) {
-        std::string exe = pExePath ? pExePath : "";
-        while (!exe.empty() && (exe.front() == '"' || exe.front() == ' ' || exe.front() == '\t')) exe.erase(0, 1);
-        while (!exe.empty() && (exe.back() == '"' || exe.back() == ' ' || exe.back() == '\t')) exe.pop_back();
-        SyncOrGenerate(appId, exe, hasDPlus);
+    // Only genuine owners, -d+, or -forcedenuvo execute sync or package generation
+    if (LuaConfig::IsOwned(appId) || hasDPlus || hasForcedDenuvo) {
+        std::string_view exeSv = pExePath ? pExePath : "";
+        exeSv = TrimWhitespace(exeSv);
+        while (!exeSv.empty() && (exeSv.front() == '"' || exeSv.front() == '\'')) {
+            exeSv.remove_prefix(1);
+        }
+        while (!exeSv.empty() && (exeSv.back() == '"' || exeSv.back() == '\'')) {
+            exeSv.remove_suffix(1);
+        }
+        exeSv = TrimWhitespace(exeSv);
+        SyncOrGenerate(appId, std::string(exeSv), hasDPlus);
     }
 }
 
@@ -578,6 +617,7 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     }
 
     std::error_code ec;
+    const bool shouldLockManifest = Config::GetDenuvoLockManifest();
     {
         std::lock_guard fileLock(g_syncFileMutex);
         const bool luaFileExists = std::filesystem::exists(luaFilePath, ec) && !ec;
@@ -607,7 +647,11 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
             lines.push_back("-- Locked Manifests (Prevent Auto-Update)");
             for (const auto& [depotId, gid] : acfData.installedDepots) {
                 if (!gid.empty() && gid != "0") {
-                    lines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                    if (shouldLockManifest) {
+                        lines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                    } else {
+                        lines.push_back("-- setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                    }
                 }
             }
 
@@ -665,8 +709,11 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                         if (ec2 == std::errc{} && dId != 0) {
                             auto itDepot = acfData.installedDepots.find(dId);
                             if (itDepot != acfData.installedDepots.end() && !itDepot->second.empty() && itDepot->second != "0") {
-                                // Enforce active, uncommented lock with latest installed GID
-                                lines[i] = "setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
+                                if (shouldLockManifest) {
+                                    lines[i] = "setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
+                                } else {
+                                    lines[i] = "-- setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
+                                }
                                 handledDepots.insert(dId);
                             }
                         }
@@ -700,12 +747,17 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                 }
             }
 
-            // Enforce 100% full coverage: insert any missing installed depot manifests (even if user deleted them!)
+            // Enforce full coverage: insert any missing installed depot manifests
             std::vector<std::string> missingManifestLines;
             for (const auto& [depotId, gid] : acfData.installedDepots) {
                 if (!gid.empty() && gid != "0" && !handledDepots.contains(depotId)) {
-                    missingManifestLines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
-                    LOG_INFO("DenuvoSync: re-inserting missing locked manifest depot={} gid={}", depotId, gid);
+                    if (shouldLockManifest) {
+                        missingManifestLines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                    } else {
+                        missingManifestLines.push_back("-- setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                    }
+                    LOG_INFO("DenuvoSync: re-inserting missing manifest depot={} gid={} (locked={})",
+                             depotId, gid, shouldLockManifest);
                 }
             }
 
@@ -740,9 +792,11 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     // Immediately load the written/updated Lua configuration into memory
     LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
 
-    // Mirror .manifest files into <AppId>/ folder
-    CopyManifestMirrors(appId, appLuaDir, acfData, acfPath);
-    LuaConfig::SyncManifests(OSTPlatform::Encoding::PathToUtf8(appLuaDir));
+    if (shouldLockManifest) {
+        // Mirror .manifest files into <AppId>/ folder and sync to Steam depotcache
+        CopyManifestMirrors(appId, appLuaDir, acfData, acfPath);
+        LuaConfig::SyncManifests(OSTPlatform::Encoding::PathToUtf8(appLuaDir));
+    }
 
     // Write SteamID.txt for offline ticket impersonation (NEVER WRITE .bin FILES!)
     const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketBytes);

@@ -5,6 +5,15 @@
 
 namespace PipeManager::DenuvoAuth {
 
+    // Checks whether cmdLine contains a specific argument (case-insensitive, token boundary aware).
+    bool HasCmdLineArg(const char* cmdLine, const char* arg);
+
+    // Checks whether cmdLine contains any variant of -nodenuvo (-nodenuvo, -no-denuvo, -no_denuvo).
+    bool HasNoDenuvoArg(const char* cmdLine);
+
+    // Checks whether cmdLine contains any variant of -forcedenuvo (-forcedenuvo, -force-denuvo, -force_denuvo).
+    bool HasForcedDenuvoArg(const char* cmdLine);
+
     // Called when CUser_SpawnProcess is intercepted in Hooks_Misc.
     // Checks the zero-operation gatekeeper (!hasLua && !hasDPlus -> returns immediately).
     // If -d+ is present, records the intent and triggers sync/generation if authorized.

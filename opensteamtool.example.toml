@@ -103,3 +103,31 @@ enabled = false
 #
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 # url_template = "https://fast.jsdelivr.net/gh/mmxlyo/steam-monitor@{channel}/{component}/{sha256}.toml"
+
+[denuvo]
+# Whether to lock depot manifests in <AppId>.lua (setManifestid) when synchronizing
+# offline authorization on an authorized account or with -d+.
+# true  (default) -> Writes active setManifestid to lock installed GIDs, protecting Denuvo offline tokens.
+# false           -> Writes setManifestid as comments (-- setManifestid) and skips manifest mirroring,
+#                    allowing Steam to detect and download official updates normally.
+# (Tip: You can pass `-nodenuvo` or `-forcedenuvo` in Steam launch options, or specify `noDenuvo(appid)` /
+#  `forcedenuvo(appid)` in Lua to control Denuvo processing per-game.)
+#
+# 切号授权或使用 -d+ 同步时，是否在 <AppId>.lua 中激活 setManifestid 锁定清单。
+# true  (默认)  → 写入活跃的 setManifestid 锁定已安装版本 GID，防止 Steam 静默更新破坏 Denuvo 离线授权。
+# false         → 所有 setManifestid 以注释态 (-- setManifestid) 写入并跳过清单镜像，
+#                 允许 Steam 客户端正常检测并自动下载官方更新补丁。
+# （提示：亦可在 Steam 游戏属性中加入启动参数 `-nodenuvo` 或 `-forcedenuvo`，或在 Lua 中配置 `noDenuvo(appid)` /
+#  `forcedenuvo(appid)` 来单独控制某个游戏的 Denuvo 处理逻辑。）
+#
+# Determina si se bloquean los manifiestos en <AppId>.lua (setManifestid) al sincronizar la autorización offline
+# en una cuenta autorizada o con -d+.
+# true  (por defecto) -> Bloquea los GID instalados para evitar que las actualizaciones silenciosas de Steam
+#                        invaliden los tokens offline de Denuvo.
+# false               -> Escribe setManifestid como comentarios (-- setManifestid) y omite el espejado de manifiestos,
+#                        permitiendo que Steam detecte y descargue actualizaciones oficiales normalmente.
+# (Consejo: También puedes pasar `-nodenuvo` o `-forcedenuvo` en las opciones de lanzamiento de Steam, o especificar
+#  `noDenuvo(appid)` / `forcedenuvo(appid)` en Lua para controlar el procesamiento de Denuvo por juego.)
+lock_manifest = true
+
+

@@ -46,4 +46,5 @@ namespace Config {
     CloudSettings GetCloudSettings();
     bool GetStatsEnableApi();
     std::vector<InjectDll> GetInjectDlls();
+    bool GetDenuvoLockManifest();
 }
