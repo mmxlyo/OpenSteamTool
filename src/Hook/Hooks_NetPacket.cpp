@@ -7,6 +7,7 @@
 #include "Utils/Tickets/EticketClient.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -446,8 +447,16 @@ namespace Hooks_NetPacket_OwnershipTicket {
             return;
         }
 
-        // Steam already returned a valid ticket (account owns it) — leave it.
-        if (resp.eresult() == k_EResultOK) return;
+        // Steam already returned a valid ticket (account owns it) — capture & leave it.
+        if (resp.eresult() == k_EResultOK) {
+            if (resp.has_ticket() && !resp.ticket().empty()) {
+                PipeManager::DenuvoAuth::OnOwnershipTicketCaptured(
+                    resp.app_id(),
+                    reinterpret_cast<const uint8_t*>(resp.ticket().data()),
+                    resp.ticket().size());
+            }
+            return;
+        }
         if (!LuaConfig::HasDepot(resp.app_id())) return;
 
         const int32 origEresult = resp.eresult();

@@ -1,4 +1,5 @@
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
 #include "Pipe/Features/DenuvoAuth/ProtectionScan.h"
 #include "Utils/Logging/Log.h"
 #include "Utils/Config/LuaConfig.h"
@@ -11,6 +12,7 @@
 #include "dllmain.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <cstring>
@@ -62,31 +64,6 @@ namespace {
     std::mutex g_dPlusMutex;
     std::unordered_set<AppId_t> g_dPlusLaunches;
     std::mutex g_syncFileMutex;
-
-    using CreateInterfaceFn = void* (*)(const char* pName, int* pReturnCode);
-
-    class ISteamAppTicket {
-    public:
-        virtual uint32 GetAppOwnershipTicketData(uint32 nAppID, void* pvBuffer, uint32 cbBufferLength,
-                                                 uint32* piAppId, uint32* piSteamId, uint32* piSignature, uint32* pcbSignature) = 0;
-    };
-
-    class ISteamClient {
-    public:
-        virtual HSteamPipe CreateSteamPipe() = 0;
-        virtual bool BReleaseSteamPipe(HSteamPipe hSteamPipe) = 0;
-        virtual HSteamUser ConnectToGlobalUser(HSteamPipe hSteamPipe) = 0;
-        virtual HSteamUser CreateLocalUser(HSteamPipe* phSteamPipe, EAccountType eAccountType) = 0;
-        virtual void ReleaseUser(HSteamPipe hSteamPipe, HSteamUser hUser) = 0;
-        virtual void* GetISteamUser(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
-        virtual void* GetISteamServer(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
-        virtual void SetLocalIPBinding(uint32 unIP, uint16 usPort) = 0;
-        virtual void* GetISteamFriends(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
-        virtual void* GetISteamUtils(HSteamPipe hSteamPipe, const char* pchVersion) = 0;
-        virtual void* GetISteamMatchmaking(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
-        virtual void* GetISteamMatchmakingServers(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
-        virtual void* GetISteamGenericInterface(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
-    };
 
     std::string_view TrimWhitespace(std::string_view str) noexcept {
         while (!str.empty() && std::isspace(static_cast<unsigned char>(str.front()))) {
@@ -155,14 +132,18 @@ namespace {
     std::filesystem::path FindAcfPath(AppId_t appId, const std::string& exePath) {
         std::error_code ec;
 
+        // Clean exePath from enclosing quotes and whitespace
+        std::string cleanExe = exePath;
+        while (!cleanExe.empty() && (cleanExe.front() == '"' || cleanExe.front() == '\'' || std::isspace(static_cast<unsigned char>(cleanExe.front())))) cleanExe.erase(0, 1);
+        while (!cleanExe.empty() && (cleanExe.back() == '"' || cleanExe.back() == '\'' || std::isspace(static_cast<unsigned char>(cleanExe.back())))) cleanExe.pop_back();
+
         // Strategy 1: Walk up from exePath directly to find steamapps folder
-        if (!exePath.empty()) {
-            for (auto p = OSTPlatform::Encoding::PathFromUtf8(exePath).parent_path();
+        if (!cleanExe.empty()) {
+            for (auto p = OSTPlatform::Encoding::PathFromUtf8(cleanExe).parent_path();
                  !p.empty() && p != p.parent_path();
                  p = p.parent_path()) {
-                auto fn = p.filename().string();
-                std::transform(fn.begin(), fn.end(), fn.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                if (fn == "steamapps") {
+                const auto& fn = p.filename().native();
+                if (_wcsicmp(fn.c_str(), L"steamapps") == 0) {
                     auto candidate = p / ("appmanifest_" + std::to_string(appId) + ".acf");
                     if (std::filesystem::exists(candidate, ec) && !ec) {
                         LOG_INFO("DenuvoSync: located ACF from exePath: {}", candidate.string());
@@ -244,10 +225,6 @@ namespace {
                     } else {
                         stack.push_back("");
                     }
-                } else if (ch == '}') {
-                    if (!stack.empty()) {
-                        stack.pop_back();
-                    }
                 }
             }
 
@@ -277,6 +254,14 @@ namespace {
                     auto [p, ec] = std::from_chars(tokens[0].data(), tokens[0].data() + tokens[0].size(), dId);
                     if (ec == std::errc{} && dId != 0 && !val.empty()) {
                         data.installedDepots.try_emplace(dId, val);
+                    }
+                }
+            }
+
+            for (char ch : trimmed) {
+                if (ch == '}') {
+                    if (!stack.empty()) {
+                        stack.pop_back();
                     }
                 }
             }
@@ -317,10 +302,6 @@ namespace {
                     } else {
                         stack.push_back("");
                     }
-                } else if (ch == '}') {
-                    if (!stack.empty()) {
-                        stack.pop_back();
-                    }
                 }
             }
 
@@ -339,74 +320,22 @@ namespace {
                     }
                 }
             }
+
+            for (char ch : trimmed) {
+                if (ch == '}') {
+                    if (!stack.empty()) {
+                        stack.pop_back();
+                    }
+                }
+            }
         }
 
         return keys;
     }
 
     std::vector<uint8_t> ExtractOwnershipTicket(AppId_t appId) {
-        std::vector<uint8_t> ticket;
-        HMODULE steamClientMod = client_hModule ? reinterpret_cast<HMODULE>(client_hModule) : nullptr;
-        if (!steamClientMod) steamClientMod = GetModuleHandleA("steamclient64.dll");
-        if (!steamClientMod) steamClientMod = GetModuleHandleA("steamclient.dll");
-        if (!steamClientMod) return ticket;
-
-        auto createInterface = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(steamClientMod, "CreateInterface"));
-        if (!createInterface) return ticket;
-
-        int returnCode = 0;
-        auto* client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient023", &returnCode));
-        if (!client) client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient021", &returnCode));
-        if (!client) client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient020", &returnCode));
-        if (!client) client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient019", &returnCode));
-        if (!client) return ticket;
-
-        HSteamPipe pipe = client->CreateSteamPipe();
-        if (!pipe) return ticket;
-
-        HSteamUser user = client->ConnectToGlobalUser(pipe);
-        if (!user) {
-            client->BReleaseSteamPipe(pipe);
-            return ticket;
-        }
-
-        auto* appTicket = reinterpret_cast<ISteamAppTicket*>(
-            client->GetISteamGenericInterface(user, pipe, "STEAMAPPTICKET_INTERFACE_VERSION001"));
-        if (!appTicket) {
-            appTicket = reinterpret_cast<ISteamAppTicket*>(
-                client->GetISteamGenericInterface(user, pipe, "SteamAppTicket001"));
-        }
-
-        if (appTicket) {
-            ticket.resize(4096);
-            uint32 appIdOffset = 0, steamIdOffset = 0, signatureOffset = 0, signatureSize = 0;
-            uint32 written = appTicket->GetAppOwnershipTicketData(
-                appId, ticket.data(), static_cast<uint32>(ticket.size()),
-                &appIdOffset, &steamIdOffset, &signatureOffset, &signatureSize);
-
-            if (written > ticket.size()) {
-                ticket.resize(written);
-                written = appTicket->GetAppOwnershipTicketData(
-                    appId, ticket.data(), static_cast<uint32>(ticket.size()),
-                    &appIdOffset, &steamIdOffset, &signatureOffset, &signatureSize);
-            }
-
-            if (written > 0 && written <= ticket.size()) {
-                ticket.resize(written);
-                // Cache raw ticket in credential store memory for immediate use in this session
-                AppTicket::WriteAppOwnershipTicket(appId, ticket);
-            } else {
-                ticket.clear();
-            }
-        }
-
-        client->ReleaseUser(pipe, user);
-        client->BReleaseSteamPipe(pipe);
-
-        if (ticket.empty()) {
-            ticket = AppTicket::GetAppOwnershipTicketFromCredentialStore(appId);
-        }
-
+        auto ticket = AppTicket::GetAppOwnershipTicketFromCredentialStore(appId);
+        LOG_INFO("DenuvoSync: retrieved ticket from credential store for appId={}, size={}", appId, ticket.size());
         return ticket;
     }
 
@@ -437,10 +366,21 @@ namespace {
             }
         }
 
-        SetFileAttributesW(targetPath.c_str(), FILE_ATTRIBUTE_NORMAL);
-        if (!MoveFileExW(tempPath.c_str(), targetPath.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            LOG_ERROR("DenuvoSync: MoveFileExW failed to replace {} (error={})", targetPath.string(), GetLastError());
+        bool moved = false;
+        DWORD lastError = 0;
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            SetFileAttributesW(targetPath.c_str(), FILE_ATTRIBUTE_NORMAL);
+            if (MoveFileExW(tempPath.c_str(), targetPath.c_str(),
+                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                moved = true;
+                break;
+            }
+            lastError = GetLastError();
+            Sleep(10);
+        }
+
+        if (!moved) {
+            LOG_ERROR("DenuvoSync: MoveFileExW failed to replace {} (error={})", targetPath.string(), lastError);
             std::filesystem::remove(tempPath, ec);
             return false;
         }
@@ -453,18 +393,26 @@ namespace {
         std::filesystem::create_directories(targetDir, ec);
 
         std::vector<std::filesystem::path> searchDirs;
+        auto addSearchDir = [&](const std::filesystem::path& dir) {
+            if (dir.empty()) return;
+            for (const auto& existing : searchDirs) {
+                if (std::filesystem::equivalent(dir, existing, ec) || (!ec && dir == existing)) return;
+                ec.clear();
+            }
+            if (std::filesystem::is_directory(dir, ec) && !ec) {
+                searchDirs.push_back(dir);
+            }
+        };
 
-        // Depotcache next to steamapps and in library root
         if (!acfPath.empty()) {
-            searchDirs.push_back(acfPath.parent_path() / "depotcache");
+            addSearchDir(acfPath.parent_path() / "depotcache");
             if (acfPath.parent_path() != acfPath.parent_path().parent_path()) {
-                searchDirs.push_back(acfPath.parent_path().parent_path() / "depotcache");
+                addSearchDir(acfPath.parent_path().parent_path() / "depotcache");
             }
         }
 
-        std::string steamPath = SteamInstallPath;
-        if (!steamPath.empty()) {
-            searchDirs.push_back(std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(steamPath)) / "depotcache");
+        if (SteamInstallPath[0] != '\0') {
+            addSearchDir(std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "depotcache");
         }
 
         for (const auto& [depotId, gid] : acfData.installedDepots) {
@@ -478,6 +426,9 @@ namespace {
                     if (!std::filesystem::exists(destFile, ec)) {
                         if (CopyFileW(srcFile.c_str(), destFile.c_str(), FALSE)) {
                             LOG_INFO("DenuvoSync: mirrored manifest {} -> {}", srcFile.string(), destFile.string());
+                        } else {
+                            LOG_WARN("DenuvoSync: failed to mirror manifest {} -> {} (error={})",
+                                     srcFile.string(), destFile.string(), GetLastError());
                         }
                     }
                     break;
@@ -535,8 +486,13 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
         while (!exeSv.empty() && (exeSv.back() == '"' || exeSv.back() == '\'')) {
             exeSv.remove_suffix(1);
         }
-        exeSv = TrimWhitespace(exeSv);
-        SyncOrGenerate(appId, std::string(exeSv), hasDPlus);
+        try {
+            SyncOrGenerate(appId, std::string(exeSv), hasDPlus);
+        } catch (const std::exception& ex) {
+            LOG_ERROR("DenuvoSync: exception in SyncOrGenerate for appId={}: {}", appId, ex.what());
+        } catch (...) {
+            LOG_ERROR("DenuvoSync: unknown exception in SyncOrGenerate for appId={}", appId);
+        }
     }
 }
 
@@ -601,12 +557,14 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     }
 
     AcfData acfData = ParseAcf(acfPath);
+    LOG_INFO("DenuvoSync: parsed ACF depots: count={}", acfData.installedDepots.size());
     if (acfData.installedDepots.empty()) {
         LOG_WARN("DenuvoSync: no installed depots found in {}", acfPath.string());
         return false;
     }
 
     auto depotKeys = ParseConfigVdfKeys(SteamInstallPath);
+    LOG_INFO("DenuvoSync: parsed config.vdf keys: count={}", depotKeys.size());
     auto ticketBytes = ExtractOwnershipTicket(appId);
     std::string appTicketHex = ticketBytes.empty() ? "null" : ToHex(ticketBytes.data(), ticketBytes.size());
 
@@ -800,33 +758,27 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
 
     // Write SteamID.txt for offline ticket impersonation (NEVER WRITE .bin FILES!)
     const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketBytes);
-    if (ticketSteamId != 0) {
-        if (AppTicket::WriteSteamID(appId, ticketSteamId)) {
-            LOG_INFO("DenuvoSync: persisted SteamID.txt from ticket for appId={} steamid={}", appId, ticketSteamId);
-        }
-    } else {
-        uint32_t accountId = 0;
-        std::wstring universe;
-        if (OSTPlatform::SteamCredentialStore::GetActiveUser(accountId, universe) == OSTPlatform::SteamCredentialStore::Status::Ok && accountId != 0) {
-            EUniverse u = k_EUniversePublic;
-            if (_wcsicmp(universe.c_str(), L"Beta") == 0) u = k_EUniverseBeta;
-            else if (_wcsicmp(universe.c_str(), L"Internal") == 0) u = k_EUniverseInternal;
-            else if (_wcsicmp(universe.c_str(), L"Dev") == 0) u = k_EUniverseDev;
-
-            CSteamID steamId;
-            steamId.Set(accountId, u, k_EAccountTypeIndividual);
-            if (AppTicket::WriteSteamID(appId, steamId.ConvertToUint64())) {
-                LOG_INFO("DenuvoSync: persisted SteamID.txt from active user for appId={} steamid={}", appId, steamId.ConvertToUint64());
-            }
+    uint64_t targetSteamId = ticketSteamId;
+    if (targetSteamId == 0) {
+        if (auto activeId = GetCurrentActiveSteamId()) {
+            targetSteamId = *activeId;
         }
     }
 
+    if (targetSteamId != 0) {
+        if (AppTicket::WriteSteamID(appId, targetSteamId)) {
+            LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={}", appId, targetSteamId);
+        }
+    }
+
+    LOG_INFO("DenuvoSync: SyncOrGenerate completed successfully for appId={}", appId);
     return true;
 }
 
 void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
     if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
     if (LuaConfig::IsNoDenuvo(appId)) return;
+    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
 
     // 1. Store in memory in SteamCredentialStore
     std::vector<uint8_t> ticketVec(data, data + size);
@@ -884,6 +836,77 @@ void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) 
 
     if (wrote) {
         LOG_INFO("DenuvoSync: successfully refreshed ETicket hex in {} (size={})", luaFilePath.string(), size);
+        LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
+    }
+}
+
+void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
+    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
+    if (LuaConfig::IsNoDenuvo(appId)) return;
+    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
+
+    // 1. Store in memory in SteamCredentialStore
+    std::vector<uint8_t> ticketVec(data, data + size);
+    AppTicket::WriteAppOwnershipTicket(appId, ticketVec);
+
+    // 2. Persist SteamID.txt if ticket contains valid steamId
+    const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketVec);
+    if (ticketSteamId != 0) {
+        AppTicket::WriteSteamID(appId, ticketSteamId);
+    }
+
+    // 3. Format ticket bytes as hex
+    std::string hex = ToHex(data, size);
+
+    // 4. Locate and update <AppId>.lua
+    std::filesystem::path luaBaseDir;
+    if (LuaDir[0] != '\0') {
+        luaBaseDir = OSTPlatform::Encoding::PathFromUtf8(LuaDir);
+    } else if (SteamInstallPath[0] != '\0') {
+        luaBaseDir = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "config" / "lua";
+    }
+    if (luaBaseDir.empty()) return;
+
+    const auto luaFilePath = luaBaseDir / std::to_string(appId) / (std::to_string(appId) + ".lua");
+    bool wrote = false;
+    {
+        std::error_code ec;
+        std::lock_guard fileLock(g_syncFileMutex);
+        if (!std::filesystem::exists(luaFilePath, ec) || ec) return;
+
+        std::ifstream in(luaFilePath);
+        if (!in.is_open()) return;
+
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(in, line)) {
+            lines.push_back(line);
+        }
+        in.close();
+
+        bool updated = false;
+        for (auto& l : lines) {
+            std::string_view sv = TrimWhitespace(l);
+            std::string lower(sv);
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lower.find("setappticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
+                l = "-- setAppTicket(" + std::to_string(appId) + ", \"" + hex + "\")";
+                updated = true;
+                break;
+            }
+        }
+
+        if (!updated) {
+            lines.push_back("");
+            lines.push_back("-- App Ownership Ticket (AppTicket)");
+            lines.push_back("-- setAppTicket(" + std::to_string(appId) + ", \"" + hex + "\")");
+        }
+
+        wrote = AtomicWriteLines(luaFilePath, lines);
+    }
+
+    if (wrote) {
+        LOG_INFO("DenuvoSync: successfully refreshed AppTicket hex in {} (size={})", luaFilePath.string(), size);
         LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
     }
 }

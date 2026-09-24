@@ -37,4 +37,8 @@ namespace PipeManager::DenuvoAuth {
     // Refreshes the in-memory ETicket and updates the -- setETicket hex in <AppId>.lua.
     void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
 
+    // Called when a live AppOwnershipTicket is captured from Steam Client (eMsg 858 or IPC) for an owned game.
+    // Stores the ticket in memory, updates SteamID.txt, and updates -- setAppTicket hex in <AppId>.lua.
+    void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
+
 } // namespace PipeManager::DenuvoAuth

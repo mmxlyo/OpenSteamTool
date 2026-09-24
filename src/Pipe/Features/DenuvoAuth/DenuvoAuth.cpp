@@ -41,7 +41,9 @@ namespace {
         return k_EUniverseInvalid;
     }
 
-    std::optional<uint64> GetCurrentSteamIdForDenuvoAuth() {
+} // namespace
+
+    std::optional<uint64> GetCurrentActiveSteamId() {
         uint32 accountId = 0;
         std::wstring universeName;
         const auto status = OSTPlatform::SteamCredentialStore::GetActiveUser(accountId, universeName);
@@ -62,6 +64,8 @@ namespace {
         steamId.Set(accountId, universe, k_EAccountTypeIndividual);
         return steamId.ConvertToUint64();
     }
+
+namespace {
 
     struct ProcessAuth {
         bool scanned = false;
@@ -122,7 +126,7 @@ namespace {
             if (steamIdPersisted || !denuvo || authorizedAppId == k_uAppIdInvalid || authorizedAppId == 0) return;
             if (!LuaConfig::IsOwned(authorizedAppId)) return;
 
-            const std::optional<uint64> steamId = GetCurrentSteamIdForDenuvoAuth();
+            const std::optional<uint64> steamId = GetCurrentActiveSteamId();
             if (!steamId || *steamId == 0) {
                 LOG_PIPE_WARN("DenuvoAuth: failed to get active SteamID for auth_appid={}", authorizedAppId);
                 return;

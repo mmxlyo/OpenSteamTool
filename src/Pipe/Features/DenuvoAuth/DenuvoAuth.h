@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Pipe/PipeTypes.h"
+#include <optional>
 
 namespace PipeManager::DenuvoAuth {
 
@@ -14,5 +15,8 @@ namespace PipeManager::DenuvoAuth {
 
     // Refreshes the authorization window when an ownership or encrypted ticket is requested.
     void OnTicketRequested(const CPipeClient* pipe, AppId_t appId = k_uAppIdInvalid);
+
+    // Returns active 64-bit SteamID from credential store / active session.
+    std::optional<uint64> GetCurrentActiveSteamId();
 
 } // namespace PipeManager::DenuvoAuth

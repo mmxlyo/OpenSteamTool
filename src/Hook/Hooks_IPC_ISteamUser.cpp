@@ -62,10 +62,24 @@ namespace {
         LOG_IPC_DEBUG("IClientUser::GetAppOwnershipTicketExtendedData:{}", req.DebugString());
         if (req.cbMaxTicket() < 0) return;
 
-        AppTicket::AppOwnershipTicket ticket{};
         AppId_t appId = req.unAppID() == kOnlineFixAppId ? Hooks_Misc::ResolveAppId() : req.unAppID();
-        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
+        if (appId == 0) return;
 
+        // If Steam's genuine implementation already returned a valid ticket (account owns the game),
+        // capture it dynamically to refresh credentials and update <AppId>.lua, without tampering.
+        GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
+        if (origResp.ok() && origResp.returnValue() > 0) {
+            auto ticketSpan = origResp.pTicket();
+            const size_t ticketLen = (std::min)(static_cast<size_t>(origResp.returnValue()), ticketSpan.size());
+            if (ticketLen > 0) {
+                PipeManager::DenuvoAuth::OnOwnershipTicketCaptured(appId, ticketSpan.data(), ticketLen);
+            }
+            return;
+        }
+
+        if (!LuaConfig::HasDepot(appId)) return;
+
+        AppTicket::AppOwnershipTicket ticket{};
         // Refresh the Denuvo authorization lease window when an ownership ticket is requested.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
         
