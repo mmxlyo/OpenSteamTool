@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Types.h"
+#include "Enums.h"
+
 // ── ISteamUser callbacks (base = 100) ───────────────────────────────
 
 constexpr int k_iSteamUserCallbacks = 100;
