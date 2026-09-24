@@ -202,31 +202,59 @@ namespace
     CAPTURE_THIS_FUNC(GetAppByID, CSteamApp*, g_pController,void* pThis, AppId_t appId, bool bCreate);
     CAPTURE_THIS_FUNC(MarkAppChange,void*,g_pAppChangeSource,void* pThis,AppId_t appId, EAppChangeFlags changeFlags);
 
-    HOOK_FUNC(FillInAppOverview, void *, void *pThis, void *pAppOverview, CSteamApp *pApp)
-    {
-        if (pApp && LuaConfig::HasDepot(pApp->nAppID, false))
-        {
-            if (pApp->OwnershipFlags == k_EAppOwnershipFlags_None)
-            {
-                pApp->OwnershipFlags = static_cast<EAppOwnershipFlags>(
-                    k_EAppOwnershipFlags_OwnsLicense | k_EAppOwnershipFlags_LicensePermanent);
-            }
-            uint32_t t = LuaConfig::GetPurchaseTime(pApp->nAppID);
-            if (t)
-            {
-                pApp->PurchasedTime = t;
-                LOG_STEAMUI_TRACE("FillInAppOverview: set PurchasedTime={} for appId={}",
-                                  pApp->PurchasedTime, pApp->nAppID);
-            }
-        }
-        return oFillInAppOverview(pThis, pAppOverview, pApp);
-    }
-
     // Apps to drop from or restore to the library UI
     std::mutex g_removalMutex;
     std::vector<AppId_t> g_pendingRemovals;
     std::vector<AppId_t> g_pendingAdditions;
     std::unordered_set<AppId_t> g_removedAppIds;
+
+    HOOK_FUNC(FillInAppOverview, void *, void *pThis, void *pAppOverview, CSteamApp *pApp)
+    {
+        bool isRemoved = false;
+        if (pApp)
+        {
+            if (LuaConfig::HasDepot(pApp->nAppID, false))
+            {
+                if (pApp->OwnershipFlags == k_EAppOwnershipFlags_None)
+                {
+                    pApp->OwnershipFlags = static_cast<EAppOwnershipFlags>(
+                        k_EAppOwnershipFlags_OwnsLicense | k_EAppOwnershipFlags_LicensePermanent);
+                }
+                uint32_t t = LuaConfig::GetPurchaseTime(pApp->nAppID);
+                if (t)
+                {
+                    pApp->PurchasedTime = t;
+                    LOG_STEAMUI_TRACE("FillInAppOverview: set PurchasedTime={} for appId={}",
+                                      pApp->PurchasedTime, pApp->nAppID);
+                }
+            }
+            else
+            {
+                if (!LuaConfig::IsOwned(pApp->nAppID))
+                {
+                    std::lock_guard<std::mutex> lock(g_removalMutex);
+                    if (g_removedAppIds.contains(pApp->nAppID))
+                    {
+                        isRemoved = true;
+                        pApp->OwnershipFlags = k_EAppOwnershipFlags_None;
+                        pApp->PurchasedTime = 0;
+                        pApp->MasterSubAppID = 0;
+                    }
+                }
+            }
+        }
+
+        void* ret = oFillInAppOverview(pThis, pAppOverview, pApp);
+
+        if (isRemoved && pAppOverview)
+        {
+            auto* overview = reinterpret_cast<CAppOverview*>(pAppOverview);
+            overview->set_subscribed_to(false);
+            LOG_STEAMUI_DEBUG("FillInAppOverview: cleared subscribed_to for removed appId={}", pApp->nAppID);
+        }
+
+        return ret;
+    }
 
     // A full rebuild never lists removed_appid for apps still in the map
     // so re-assert our set after the snapshot is built.
@@ -315,7 +343,6 @@ namespace
 
             if (!drainingRemovals.empty())
             {
-                std::vector<AppId_t> newlyRemoved;
                 std::vector<AppId_t> parentsToNotify;
 
                 for (AppId_t appId : drainingRemovals)
@@ -323,6 +350,8 @@ namespace
                     if (LuaConfig::IsOwned(appId) || LuaConfig::HasDepot(appId, false))
                     {
                         LOG_STEAMUI_DEBUG("RunFrame: appId {} is still owned or active in config, skipping removal", appId);
+                        std::lock_guard<std::mutex> lock(g_removalMutex);
+                        g_removedAppIds.erase(appId);
                         continue;
                     }
 
@@ -344,14 +373,15 @@ namespace
                                     parentsToNotify.push_back(pApp->ParentAppID);
                                 }
                             }
-                            newlyRemoved.push_back(appId);
-                        }
-                        else if (pApp->AppStateFlags == k_EAppStateUninstalled)
-                        {
-                            newlyRemoved.push_back(appId);
                         }
                     }
 
+                    {
+                        std::lock_guard<std::mutex> lock(g_removalMutex);
+                        g_removedAppIds.insert(appId);
+                    }
+
+                    LOG_STEAMUI_INFO("RunFrame: removing appId {}", appId);
                     oMarkAppChange(g_pAppChangeSource, appId, EAppChangeFlags::AppInfoOrConfig);
                 }
 
@@ -359,12 +389,6 @@ namespace
                 {
                     LOG_STEAMUI_INFO("RunFrame: notifying parent appId {} of DLC change", parentId);
                     oMarkAppChange(g_pAppChangeSource, parentId, EAppChangeFlags::AppInfoOrConfig);
-                }
-
-                if (!newlyRemoved.empty())
-                {
-                    std::lock_guard<std::mutex> lock(g_removalMutex);
-                    g_removedAppIds.insert(newlyRemoved.begin(), newlyRemoved.end());
                 }
             }
         }
@@ -416,6 +440,7 @@ namespace Hooks_SteamUI
     {
         std::lock_guard<std::mutex> lock(g_removalMutex);
         std::erase(g_pendingAdditions, appId);
+        g_removedAppIds.insert(appId);
         if (std::ranges::find(g_pendingRemovals, appId) == g_pendingRemovals.end()) {
             g_pendingRemovals.push_back(appId);
         }
@@ -436,5 +461,11 @@ namespace Hooks_SteamUI
         if (std::ranges::find(g_pendingAdditions, appId) == g_pendingAdditions.end()) {
             g_pendingAdditions.push_back(appId);
         }
+    }
+
+    bool IsRemoved(AppId_t appId)
+    {
+        std::lock_guard<std::mutex> lock(g_removalMutex);
+        return g_removedAppIds.contains(appId);
     }
 }

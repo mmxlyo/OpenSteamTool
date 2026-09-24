@@ -148,6 +148,24 @@ namespace {
                 return true;
             }
         } else {
+            // App is not active in LuaConfig:
+            // 1. If explicitly marked as removed in the UI session (and not genuinely owned):
+            if (Hooks_SteamUI::IsRemoved(appId) && !LuaConfig::IsOwned(appId)) {
+                if (pOwn) {
+                    pOwn->bOwnsLicense = false;
+                    pOwn->PackageId = 0;
+                }
+                return false;
+            }
+            // 2. If it claims ownership from Package 0 without being genuinely owned:
+            if (pOwn && !LuaConfig::IsOwned(appId)) {
+                const bool isFromFakePackage = (pOwn->PackageId == kInjectedPackageId || pOwn->PackageId == 0);
+                if (isFromFakePackage) {
+                    pOwn->bOwnsLicense = false;
+                    pOwn->PackageId = 0;
+                    return false;
+                }
+            }
             if (!result && pOwn) {
                 pOwn->bOwnsLicense = false;
             }
@@ -210,11 +228,10 @@ namespace Hooks_Package {
                 std::vector<AppId_t> toAdd;
                 toAdd.reserve(additions.size());
                 for (AppId_t id : additions) {
-                    Hooks_SteamUI::CancelRemoval(id);
-                    Hooks_SteamUI::QueueAddition(id);
                     if (!addedIds.insert(id).second) {
                         continue;
                     }
+                    Hooks_SteamUI::QueueAddition(id);
 
                     bool alreadyPresent = false;
                     for (uint32_t i = 0; i < pPkg->AppIdVec.m_Size; ++i) {
@@ -262,7 +279,7 @@ namespace Hooks_Package {
         for (AppId_t id : removals) {
             // ParseFile unloads the old file before parsing the replacement.
             // Do not queue that transient removal when the id was added again.
-            if (!addedIds.contains(id) && queuedRemovals.insert(id).second) {
+            if (!addedIds.contains(id) && !LuaConfig::IsOwned(id) && queuedRemovals.insert(id).second) {
                 Hooks_SteamUI::QueueRemoval(id);
                 ++queuedRemovalCount;
             }

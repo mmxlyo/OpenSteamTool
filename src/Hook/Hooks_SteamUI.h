@@ -14,4 +14,6 @@ namespace Hooks_SteamUI {
     void CancelRemoval(AppId_t appId);
     // Queues an appId for addition/restoration in the library UI
     void QueueAddition(AppId_t appId);
+    // Checks if an appId is currently marked as removed in the UI
+    bool IsRemoved(AppId_t appId);
 }
