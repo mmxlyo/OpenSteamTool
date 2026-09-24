@@ -85,13 +85,13 @@ namespace {
             if (authIt != g_processAuth.end()) return &authIt->second;
         }
 
-        // Resilient fallback: match by active process PID if the specific pipe handle
+        // Resilient fallback: match by active process if the specific pipe handle
         // was not handshaked yet or was evicted from g_pipeProcess
         if (pipeKey.pid != 0) {
-            for (auto& [procKey, auth] : g_processAuth) {
-                if (procKey.pid == pipeKey.pid) {
-                    return &auth;
-                }
+            if (const auto currentCreation = ProcessInspector::GetProcessCreationTime(pipeKey.pid)) {
+                const ProcessKey activeKey{pipeKey.pid, *currentCreation};
+                const auto authIt = g_processAuth.find(activeKey);
+                if (authIt != g_processAuth.end()) return &authIt->second;
             }
         }
 

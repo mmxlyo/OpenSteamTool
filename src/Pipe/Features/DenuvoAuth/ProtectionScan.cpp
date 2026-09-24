@@ -257,13 +257,12 @@ namespace {
             return std::nullopt;
         }
 
-        const size_t localMatch = static_cast<size_t>(*matchRaw) - section->rawOffset;
         DetectionMatch match{};
         match.method = DetectionMethod::OepPattern;
         match.sectionName = section->name;
         match.entryPointRva = oep;
         match.matchRawOffset = static_cast<size_t>(*matchRaw);
-        match.matchRva = section->virtualAddress + static_cast<uint32>(localMatch);
+        match.matchRva = image.RawOffsetToRva(match.matchRawOffset).value_or(0);
         return match;
     }
 

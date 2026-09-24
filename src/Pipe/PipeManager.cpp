@@ -104,9 +104,9 @@ namespace {
             return initialPipeAppId;
         }
 
-        // For non-game client processes without steam environment, limit retry count
-        // to avoid stalling the IPC handshake thread for 200ms.
-        const int maxRetries = snapshot.likelyGameProcess ? kAppIdResolveRetries : 2;
+        // Games launching without SteamAppId environment variables (e.g. through external launchers)
+        // require brief retries to allow steamclient to bind the pipe to its AppId.
+        const int maxRetries = kAppIdResolveRetries;
         for (int attempt = 1; attempt < maxRetries; ++attempt) {
             std::this_thread::sleep_for(kAppIdResolveRetryDelay);
             const AppId_t pipeAppId = Hooks_Misc::ResolveAppId();
