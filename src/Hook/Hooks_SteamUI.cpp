@@ -210,7 +210,6 @@ namespace
 
     HOOK_FUNC(FillInAppOverview, void *, void *pThis, void *pAppOverview, CSteamApp *pApp)
     {
-        bool isRemoved = false;
         if (pApp)
         {
             if (LuaConfig::HasDepot(pApp->nAppID, false))
@@ -235,7 +234,6 @@ namespace
                     std::lock_guard<std::mutex> lock(g_removalMutex);
                     if (g_removedAppIds.contains(pApp->nAppID))
                     {
-                        isRemoved = true;
                         pApp->OwnershipFlags = k_EAppOwnershipFlags_None;
                         pApp->PurchasedTime = 0;
                         pApp->MasterSubAppID = 0;
@@ -244,16 +242,7 @@ namespace
             }
         }
 
-        void* ret = oFillInAppOverview(pThis, pAppOverview, pApp);
-
-        if (isRemoved && pAppOverview)
-        {
-            auto* overview = reinterpret_cast<CAppOverview*>(pAppOverview);
-            overview->set_subscribed_to(false);
-            LOG_STEAMUI_DEBUG("FillInAppOverview: cleared subscribed_to for removed appId={}", pApp->nAppID);
-        }
-
-        return ret;
+        return oFillInAppOverview(pThis, pAppOverview, pApp);
     }
 
     // A full rebuild never lists removed_appid for apps still in the map

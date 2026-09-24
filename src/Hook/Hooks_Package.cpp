@@ -157,15 +157,6 @@ namespace {
                 }
                 return false;
             }
-            // 2. If it claims ownership from Package 0 without being genuinely owned:
-            if (pOwn && !LuaConfig::IsOwned(appId)) {
-                const bool isFromFakePackage = (pOwn->PackageId == kInjectedPackageId || pOwn->PackageId == 0);
-                if (isFromFakePackage) {
-                    pOwn->bOwnsLicense = false;
-                    pOwn->PackageId = 0;
-                    return false;
-                }
-            }
             if (!result && pOwn) {
                 pOwn->bOwnsLicense = false;
             }
