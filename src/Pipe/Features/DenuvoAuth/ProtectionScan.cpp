@@ -1,6 +1,7 @@
 #include "Pipe/Features/DenuvoAuth/ProtectionScan.h"
 
 #include "OSTPlatform/include/ByteSearch.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/PE.h"
 #include "OSTPlatform/include/Process.h"
 #include "Utils/Logging/Log.h"
@@ -347,7 +348,7 @@ namespace {
             const bool executable = EndsWithInsensitive(module.path, ".exe");
             const bool dll = EndsWithInsensitive(module.path, ".dll");
             if (!executable && !dll) continue;
-            if (module.size < kMinPackedModuleBytes) {
+            if (!executable && module.size < kMinPackedModuleBytes) {
                 LOG_PIPE_TRACE("DenuvoAuth: module skipped below packed size floor path={} size={} ({:.2f} MB) min={} ({:.2f} MB)",
                                module.path,
                                module.size,
@@ -377,6 +378,44 @@ namespace {
             if (!module.executable) continue;
             gameDirectory = NormalizeDirectoryPrefix(DirectoryFromPath(module.path));
             break;
+        }
+
+        // Unity IL2CPP games (e.g. Construction Simulator 1273400) host Denuvo protection inside
+        // GameAssembly.dll. During early startup handshake (within ~300ms of launch), the engine
+        // may not have loaded GameAssembly.dll into process memory yet. Check the game directory
+        // on disk and add it as a candidate if present and >= kMinPackedModuleBytes.
+        if (!gameDirectory.empty()) {
+            const std::filesystem::path gameDir(gameDirectory);
+            const std::filesystem::path gameAssemblyPath = gameDir / "GameAssembly.dll";
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(gameAssemblyPath, ec)) {
+                const auto fileSize = std::filesystem::file_size(gameAssemblyPath, ec);
+                if (!ec && fileSize >= kMinPackedModuleBytes) {
+                    const std::string assemblyPath = OSTPlatform::Encoding::PathToUtf8(gameAssemblyPath);
+                    bool alreadyPresent = false;
+                    for (const auto& m : modules) {
+                        if (EndsWithInsensitive(m.path, "\\GameAssembly.dll") ||
+                            EndsWithInsensitive(m.path, "/GameAssembly.dll")) {
+                            alreadyPresent = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyPresent) {
+                        const uint32 safeSize = static_cast<uint32>(
+                            (std::min)(fileSize, static_cast<uintmax_t>(UINT32_MAX)));
+                        modules.push_back(ModuleCandidate{
+                            assemblyPath,
+                            gameAssemblyPath,
+                            safeSize,
+                            false,
+                            false,
+                            order++,
+                        });
+                        LOG_PIPE_DEBUG("DenuvoAuth: discovered unmapped game module candidate path={} size={} ({:.2f} MB)",
+                                       assemblyPath, safeSize, BytesToMiB(static_cast<uint64>(safeSize)));
+                    }
+                }
+            }
         }
 
         for (auto& module : modules) {
