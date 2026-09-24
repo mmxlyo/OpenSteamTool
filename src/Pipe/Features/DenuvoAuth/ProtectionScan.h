@@ -51,5 +51,6 @@ namespace PipeManager::DenuvoAuth {
     };
 
     ProtectionScanReport ScanProtection(PID_t pid);
+    bool IsDenuvoPath(const std::filesystem::path& exePath);
 
 } // namespace PipeManager::DenuvoAuth

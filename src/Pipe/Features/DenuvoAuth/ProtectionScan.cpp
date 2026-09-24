@@ -496,4 +496,63 @@ ProtectionScanReport ScanProtection(PID_t pid) {
     return RunProtectionScan(pid);
 }
 
+bool IsDenuvoPath(const std::filesystem::path& inPath) {
+    std::wstring wpath = inPath.wstring();
+    while (!wpath.empty() && (wpath.front() == L'"' || wpath.front() == L' ' || wpath.front() == L'\t')) wpath.erase(0, 1);
+    while (!wpath.empty() && (wpath.back() == L'"' || wpath.back() == L' ' || wpath.back() == L'\t')) wpath.pop_back();
+
+    std::error_code ec;
+    const std::filesystem::path exePath(wpath);
+    if (exePath.empty() || !std::filesystem::is_regular_file(exePath, ec) || ec) {
+        return false;
+    }
+
+    auto testModule = [&](const std::filesystem::path& path) -> bool {
+        std::error_code err;
+        const auto sz = std::filesystem::file_size(path, err);
+        if (err || sz == 0) return false;
+
+        const OSTPlatform::PE::Image image(path);
+        if (!image) return false;
+
+        std::string utf8Path = OSTPlatform::Encoding::PathToUtf8(path);
+        const bool isExe = EndsWithInsensitive(utf8Path, ".exe");
+        const uint32 safeSize = static_cast<uint32>((std::min)(sz, static_cast<uintmax_t>(UINT32_MAX)));
+
+        ModuleCandidate mc{
+            std::move(utf8Path),
+            path,
+            safeSize,
+            isExe,
+            true,
+            0,
+        };
+
+        const auto match = DetectModule(mc, image);
+        if (match) {
+            LOG_PIPE_INFO("DenuvoAuth: detected Denuvo via static path scan in {}", mc.path);
+            return true;
+        }
+        return false;
+    };
+
+    if (testModule(exePath)) {
+        return true;
+    }
+
+    // Check Unity IL2CPP GameAssembly.dll in the same directory
+    const auto gameDir = exePath.parent_path();
+    const auto gameAssembly = gameDir / "GameAssembly.dll";
+    if (std::filesystem::is_regular_file(gameAssembly, ec) && !ec) {
+        const auto sz = std::filesystem::file_size(gameAssembly, ec);
+        if (!ec && sz >= kMinPackedModuleBytes) {
+            if (testModule(gameAssembly)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 } // namespace PipeManager::DenuvoAuth

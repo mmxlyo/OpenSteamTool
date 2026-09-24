@@ -125,17 +125,19 @@ namespace {
         TryInitFakeLicenseOnce();
         TryProcessPendingLicenseRefresh();
 
+        const bool isTrulyOwned = pOwn && result &&
+                                  (pOwn->PackageId != kInjectedPackageId) &&
+                                  (pOwn->PackageId != 0) &&
+                                  (pOwn->ExistInPackageNums > 1) &&
+                                  !pOwn->bFamilyShared &&
+                                  !pOwn->bBorrowed;
+        if (isTrulyOwned) {
+            LuaConfig::MarkOwned(appId);
+        }
+
         if (LuaConfig::HasDepot(appId, false)) {
             if (pOwn) {
-                const bool isTrulyOwned = result &&
-                                          (pOwn->PackageId != kInjectedPackageId) &&
-                                          (pOwn->PackageId != 0) &&
-                                          (pOwn->ExistInPackageNums > 1) &&
-                                          !pOwn->bFamilyShared &&
-                                          !pOwn->bBorrowed;
                 if (isTrulyOwned) {
-                    // Actually owned — record so HasDepot excludes it going forward
-                    LuaConfig::MarkOwned(appId);
                     pOwn->ReleaseState = EAppReleaseState::Released;
                 } else {
                     pOwn->PackageId    = kInjectedPackageId;

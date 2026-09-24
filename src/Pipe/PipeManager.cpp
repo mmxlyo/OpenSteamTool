@@ -3,6 +3,7 @@
 #include "Pipe/PipeTypes.h"
 #include "Pipe/ProcessInspector.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Pipe/Features/Injection/Injection.h"
 #include "Utils/Logging/Log.h"
 #include "Utils/Config/LuaConfig.h"
@@ -152,7 +153,8 @@ void OnHandshake(CPipeClient* pipe) {
     // tracked and DenuvoAuth never runs (-> 88500012).
     bool appIdFromPipe = false;
     const AppId_t appId = ResolveAppIdWithRetry(snapshot, appIdFromPipe);
-    const bool trackedApp = appId != k_uAppIdInvalid && LuaConfig::HasDepot(appId, false);
+    const bool isDPlus = DenuvoAuth::IsDPlusLaunch(appId);
+    const bool trackedApp = appId != k_uAppIdInvalid && (LuaConfig::HasDepot(appId, false) || isDPlus);
 
     // likelyGameProcess is env-derived (needs SteamAppId exported), so it's false
     // for env-less games. A pipe that resolves to a CONFIGURED depot is a tracked

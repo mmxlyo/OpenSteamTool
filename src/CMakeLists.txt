@@ -132,6 +132,7 @@ add_library(OpenSteamTool SHARED
     Pipe/ProcessInspector.cpp
     Pipe/Features/DenuvoAuth/DenuvoAuth.cpp
     Pipe/Features/DenuvoAuth/ProtectionScan.cpp
+    Pipe/Features/DenuvoAuth/DenuvoSync.cpp
     Pipe/Features/Injection/Injection.cpp
 
     # Generated IPC message structs (depends on IPCMessages.steamd via add_custom_command)

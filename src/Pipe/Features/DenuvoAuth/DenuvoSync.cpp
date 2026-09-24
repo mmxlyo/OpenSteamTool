@@ -1,0 +1,837 @@
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
+#include "Pipe/Features/DenuvoAuth/ProtectionScan.h"
+#include "Utils/Logging/Log.h"
+#include "Utils/Config/LuaConfig.h"
+#include "Utils/Tickets/AppTicket.h"
+#include "OSTPlatform/include/SteamCredentialStore.h"
+#include "OSTPlatform/include/Encoding.h"
+#include "Steam/Structs.h"
+#include "Steam/Enums.h"
+#include "dllmain.h"
+
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+#include <vector>
+#include <windows.h>
+
+namespace PipeManager::DenuvoAuth {
+namespace {
+
+    std::mutex g_dPlusMutex;
+    std::unordered_set<AppId_t> g_dPlusLaunches;
+    std::mutex g_syncFileMutex;
+
+    using CreateInterfaceFn = void* (*)(const char* pName, int* pReturnCode);
+
+    class ISteamAppTicket {
+    public:
+        virtual uint32 GetAppOwnershipTicketData(uint32 nAppID, void* pvBuffer, uint32 cbBufferLength,
+                                                 uint32* piAppId, uint32* piSteamId, uint32* piSignature, uint32* pcbSignature) = 0;
+    };
+
+    class ISteamClient {
+    public:
+        virtual HSteamPipe CreateSteamPipe() = 0;
+        virtual bool BReleaseSteamPipe(HSteamPipe hSteamPipe) = 0;
+        virtual HSteamUser ConnectToGlobalUser(HSteamPipe hSteamPipe) = 0;
+        virtual HSteamUser CreateLocalUser(HSteamPipe* phSteamPipe, EAccountType eAccountType) = 0;
+        virtual void ReleaseUser(HSteamPipe hSteamPipe, HSteamUser hUser) = 0;
+        virtual void* GetISteamUser(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
+        virtual void* GetISteamServer(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
+        virtual void SetLocalIPBinding(uint32 unIP, uint16 usPort) = 0;
+        virtual void* GetISteamFriends(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
+        virtual void* GetISteamUtils(HSteamPipe hSteamPipe, const char* pchVersion) = 0;
+        virtual void* GetISteamMatchmaking(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
+        virtual void* GetISteamMatchmakingServers(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
+        virtual void* GetISteamGenericInterface(HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char* pchVersion) = 0;
+    };
+
+    bool HasCmdLineArg(const char* cmdLine, const char* arg) {
+        if (!cmdLine || !arg) return false;
+        const size_t argLen = strlen(arg);
+        for (const char* p = cmdLine; *p; ++p) {
+            if (_strnicmp(p, arg, argLen) == 0) {
+                if (p == cmdLine || *(p - 1) == ' ' || *(p - 1) == '\t' || *(p - 1) == '"') {
+                    const char next = p[argLen];
+                    if (next == '\0' || next == ' ' || next == '\t' || next == '"' || next == '=') {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    std::string_view TrimWhitespace(std::string_view str) noexcept {
+        while (!str.empty() && std::isspace(static_cast<unsigned char>(str.front()))) {
+            str.remove_prefix(1);
+        }
+        while (!str.empty() && std::isspace(static_cast<unsigned char>(str.back()))) {
+            str.remove_suffix(1);
+        }
+        return str;
+    }
+
+    std::vector<std::string> TokenizeQuoted(std::string_view line) {
+        std::vector<std::string> tokens;
+        tokens.reserve(4);
+
+        size_t pos = 0;
+        while (pos < line.size()) {
+            pos = line.find('"', pos);
+            if (pos == std::string_view::npos) break;
+
+            std::string token;
+            token.reserve(32);
+            size_t i = pos + 1;
+            bool closed = false;
+
+            while (i < line.size()) {
+                if (line[i] == '\\' && i + 1 < line.size()) {
+                    if (line[i + 1] == '"') {
+                        token.push_back('"');
+                        i += 2;
+                        continue;
+                    }
+                    if (line[i + 1] == '\\') {
+                        token.push_back('\\');
+                        i += 2;
+                        continue;
+                    }
+                }
+                if (line[i] == '"') {
+                    closed = true;
+                    pos = i + 1;
+                    break;
+                }
+                token.push_back(line[i]);
+                ++i;
+            }
+
+            if (!closed) break;
+            tokens.push_back(std::move(token));
+        }
+
+        return tokens;
+    }
+
+    std::string ToHex(const uint8_t* data, size_t size) {
+        static constexpr char kHex[] = "0123456789abcdef";
+        std::string s;
+        s.reserve(size * 2);
+        for (size_t i = 0; i < size; ++i) {
+            s.push_back(kHex[(data[i] >> 4) & 0xF]);
+            s.push_back(kHex[data[i] & 0xF]);
+        }
+        return s;
+    }
+
+    std::filesystem::path FindAcfPath(AppId_t appId, const std::string& exePath) {
+        std::error_code ec;
+
+        // Strategy 1: Walk up from exePath directly to find steamapps folder
+        if (!exePath.empty()) {
+            for (auto p = OSTPlatform::Encoding::PathFromUtf8(exePath).parent_path();
+                 !p.empty() && p != p.parent_path();
+                 p = p.parent_path()) {
+                auto fn = p.filename().string();
+                std::transform(fn.begin(), fn.end(), fn.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (fn == "steamapps") {
+                    auto candidate = p / ("appmanifest_" + std::to_string(appId) + ".acf");
+                    if (std::filesystem::exists(candidate, ec) && !ec) {
+                        LOG_INFO("DenuvoSync: located ACF from exePath: {}", candidate.string());
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        // Strategy 2: Check primary Steam install path
+        std::string steamPath = SteamInstallPath;
+        if (!steamPath.empty()) {
+            auto primaryAcf = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(steamPath)) / "steamapps" / ("appmanifest_" + std::to_string(appId) + ".acf");
+            if (std::filesystem::exists(primaryAcf, ec) && !ec) {
+                LOG_INFO("DenuvoSync: located ACF from primary Steam path: {}", primaryAcf.string());
+                return primaryAcf;
+            }
+
+            // Strategy 3: Parse libraryfolders.vdf
+            auto libVdf = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(steamPath)) / "steamapps" / "libraryfolders.vdf";
+            std::ifstream file(libVdf);
+            if (file.is_open()) {
+                std::string line;
+                while (std::getline(file, line)) {
+                    std::string_view trimmed = TrimWhitespace(line);
+                    if (trimmed.empty() || trimmed.starts_with("//") || trimmed.starts_with("#")) continue;
+
+                    auto tokens = TokenizeQuoted(trimmed);
+                    if (tokens.size() >= 2) {
+                        std::string key = tokens[0];
+                        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        if (key == "path") {
+                            auto libAcf = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(tokens[1])) / "steamapps" / ("appmanifest_" + std::to_string(appId) + ".acf");
+                            if (std::filesystem::exists(libAcf, ec) && !ec) {
+                                LOG_INFO("DenuvoSync: located ACF from libraryfolders.vdf: {}", libAcf.string());
+                                return libAcf;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        LOG_WARN("DenuvoSync: failed to find appmanifest_{}.acf across all library paths", appId);
+        return {};
+    }
+
+    struct AcfData {
+        std::map<uint32_t, std::string> installedDepots; // depotId -> manifestGid
+        std::map<uint32_t, uint64_t> depotSizes;
+    };
+
+    AcfData ParseAcf(const std::filesystem::path& acfPath) {
+        AcfData data;
+        std::ifstream file(acfPath);
+        if (!file.is_open()) return data;
+
+        std::string line;
+        std::vector<std::string> stack;
+        std::string pendingSection;
+
+        while (std::getline(file, line)) {
+            std::string_view trimmed = TrimWhitespace(line);
+            if (trimmed.empty() || trimmed.starts_with("//") || trimmed.starts_with("#")) continue;
+
+            auto tokens = TokenizeQuoted(trimmed);
+
+            if (tokens.size() == 1) {
+                std::string s = tokens[0];
+                std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                pendingSection = std::move(s);
+            }
+
+            for (char ch : trimmed) {
+                if (ch == '{') {
+                    if (!pendingSection.empty()) {
+                        stack.push_back(std::move(pendingSection));
+                        pendingSection.clear();
+                    } else {
+                        stack.push_back("");
+                    }
+                } else if (ch == '}') {
+                    if (!stack.empty()) {
+                        stack.pop_back();
+                    }
+                }
+            }
+
+            if (tokens.size() >= 2) {
+                std::string key = tokens[0];
+                std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                const std::string& val = tokens[1];
+
+                // Case A: stack = [..., "installeddepots", "<depotId>"]
+                if (stack.size() >= 2 && stack[stack.size() - 2] == "installeddepots") {
+                    const std::string& depotSec = stack.back();
+                    uint32_t dId = 0;
+                    auto [p, ec] = std::from_chars(depotSec.data(), depotSec.data() + depotSec.size(), dId);
+                    if (ec == std::errc{} && dId != 0) {
+                        if (key == "manifest") {
+                            data.installedDepots[dId] = val;
+                        } else if (key == "size") {
+                            uint64_t sz = 0;
+                            std::from_chars(val.data(), val.data() + val.size(), sz);
+                            data.depotSizes[dId] = sz;
+                        }
+                    }
+                }
+                // Case B: stack = [..., "mounteddepots"] -> "<depotId>" "<manifestGid>"
+                else if (!stack.empty() && stack.back() == "mounteddepots") {
+                    uint32_t dId = 0;
+                    auto [p, ec] = std::from_chars(tokens[0].data(), tokens[0].data() + tokens[0].size(), dId);
+                    if (ec == std::errc{} && dId != 0 && !val.empty()) {
+                        data.installedDepots.try_emplace(dId, val);
+                    }
+                }
+            }
+        }
+
+        return data;
+    }
+
+    std::map<uint32_t, std::string> ParseConfigVdfKeys(const std::string& steamPath) {
+        std::map<uint32_t, std::string> keys;
+        if (steamPath.empty()) return keys;
+
+        auto configVdf = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(steamPath)) / "config" / "config.vdf";
+        std::ifstream file(configVdf);
+        if (!file.is_open()) return keys;
+
+        std::string line;
+        std::vector<std::string> stack;
+        std::string pendingSection;
+
+        while (std::getline(file, line)) {
+            std::string_view trimmed = TrimWhitespace(line);
+            if (trimmed.empty() || trimmed.starts_with("//") || trimmed.starts_with("#")) continue;
+
+            auto tokens = TokenizeQuoted(trimmed);
+
+            if (tokens.size() == 1) {
+                std::string s = tokens[0];
+                std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                pendingSection = std::move(s);
+            }
+
+            for (char ch : trimmed) {
+                if (ch == '{') {
+                    if (!pendingSection.empty()) {
+                        stack.push_back(std::move(pendingSection));
+                        pendingSection.clear();
+                    } else {
+                        stack.push_back("");
+                    }
+                } else if (ch == '}') {
+                    if (!stack.empty()) {
+                        stack.pop_back();
+                    }
+                }
+            }
+
+            if (tokens.size() >= 2) {
+                std::string key = tokens[0];
+                std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+                if (key == "decryptionkey" && tokens[1].size() == 64 && stack.size() >= 2) {
+                    if (stack[stack.size() - 2] == "depots") {
+                        const std::string& depotSec = stack.back();
+                        uint32_t dId = 0;
+                        auto [p, ec] = std::from_chars(depotSec.data(), depotSec.data() + depotSec.size(), dId);
+                        if (ec == std::errc{} && dId != 0) {
+                            keys[dId] = tokens[1];
+                        }
+                    }
+                }
+            }
+        }
+
+        return keys;
+    }
+
+    std::vector<uint8_t> ExtractOwnershipTicket(AppId_t appId) {
+        std::vector<uint8_t> ticket;
+        HMODULE steamClientMod = client_hModule ? reinterpret_cast<HMODULE>(client_hModule) : nullptr;
+        if (!steamClientMod) steamClientMod = GetModuleHandleA("steamclient64.dll");
+        if (!steamClientMod) steamClientMod = GetModuleHandleA("steamclient.dll");
+        if (!steamClientMod) return ticket;
+
+        auto createInterface = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(steamClientMod, "CreateInterface"));
+        if (!createInterface) return ticket;
+
+        int returnCode = 0;
+        auto* client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient023", &returnCode));
+        if (!client) client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient021", &returnCode));
+        if (!client) client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient020", &returnCode));
+        if (!client) client = reinterpret_cast<ISteamClient*>(createInterface("SteamClient019", &returnCode));
+        if (!client) return ticket;
+
+        HSteamPipe pipe = client->CreateSteamPipe();
+        if (!pipe) return ticket;
+
+        HSteamUser user = client->ConnectToGlobalUser(pipe);
+        if (!user) {
+            client->BReleaseSteamPipe(pipe);
+            return ticket;
+        }
+
+        auto* appTicket = reinterpret_cast<ISteamAppTicket*>(
+            client->GetISteamGenericInterface(user, pipe, "STEAMAPPTICKET_INTERFACE_VERSION001"));
+        if (!appTicket) {
+            appTicket = reinterpret_cast<ISteamAppTicket*>(
+                client->GetISteamGenericInterface(user, pipe, "SteamAppTicket001"));
+        }
+
+        if (appTicket) {
+            ticket.resize(4096);
+            uint32 appIdOffset = 0, steamIdOffset = 0, signatureOffset = 0, signatureSize = 0;
+            uint32 written = appTicket->GetAppOwnershipTicketData(
+                appId, ticket.data(), static_cast<uint32>(ticket.size()),
+                &appIdOffset, &steamIdOffset, &signatureOffset, &signatureSize);
+
+            if (written > ticket.size()) {
+                ticket.resize(written);
+                written = appTicket->GetAppOwnershipTicketData(
+                    appId, ticket.data(), static_cast<uint32>(ticket.size()),
+                    &appIdOffset, &steamIdOffset, &signatureOffset, &signatureSize);
+            }
+
+            if (written > 0 && written <= ticket.size()) {
+                ticket.resize(written);
+                // Cache raw ticket in credential store memory for immediate use in this session
+                AppTicket::WriteAppOwnershipTicket(appId, ticket);
+            } else {
+                ticket.clear();
+            }
+        }
+
+        client->ReleaseUser(pipe, user);
+        client->BReleaseSteamPipe(pipe);
+
+        if (ticket.empty()) {
+            ticket = AppTicket::GetAppOwnershipTicketFromCredentialStore(appId);
+        }
+
+        return ticket;
+    }
+
+    bool AtomicWriteLines(const std::filesystem::path& targetPath, const std::vector<std::string>& lines) {
+        std::error_code ec;
+        auto parent = targetPath.parent_path();
+        std::filesystem::create_directories(parent, ec);
+
+        static std::atomic<uint64_t> s_seq{0};
+        const auto seq = s_seq.fetch_add(1, std::memory_order_relaxed);
+        const auto tid = GetCurrentThreadId();
+        const std::filesystem::path tempPath = targetPath.wstring() + L".tmp." + std::to_wstring(tid) + L"." + std::to_wstring(seq);
+
+        {
+            std::ofstream out(tempPath, std::ios::trunc);
+            if (!out.is_open()) {
+                LOG_ERROR("DenuvoSync: failed to open temp file for writing: {}", tempPath.string());
+                return false;
+            }
+            for (const auto& line : lines) {
+                out << line << "\n";
+            }
+            out.flush();
+            if (!out.good()) {
+                out.close();
+                std::filesystem::remove(tempPath, ec);
+                return false;
+            }
+        }
+
+        SetFileAttributesW(targetPath.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (!MoveFileExW(tempPath.c_str(), targetPath.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            LOG_ERROR("DenuvoSync: MoveFileExW failed to replace {} (error={})", targetPath.string(), GetLastError());
+            std::filesystem::remove(tempPath, ec);
+            return false;
+        }
+
+        return true;
+    }
+
+    void CopyManifestMirrors(AppId_t appId, const std::filesystem::path& targetDir, const AcfData& acfData, const std::filesystem::path& acfPath) {
+        std::error_code ec;
+        std::filesystem::create_directories(targetDir, ec);
+
+        std::vector<std::filesystem::path> searchDirs;
+
+        // Depotcache next to steamapps and in library root
+        if (!acfPath.empty()) {
+            searchDirs.push_back(acfPath.parent_path() / "depotcache");
+            if (acfPath.parent_path() != acfPath.parent_path().parent_path()) {
+                searchDirs.push_back(acfPath.parent_path().parent_path() / "depotcache");
+            }
+        }
+
+        std::string steamPath = SteamInstallPath;
+        if (!steamPath.empty()) {
+            searchDirs.push_back(std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(steamPath)) / "depotcache");
+        }
+
+        for (const auto& [depotId, gid] : acfData.installedDepots) {
+            if (gid.empty() || gid == "0") continue;
+            std::string manifestFileName = std::to_string(depotId) + "_" + gid + ".manifest";
+
+            for (const auto& sDir : searchDirs) {
+                auto srcFile = sDir / manifestFileName;
+                if (std::filesystem::exists(srcFile, ec) && !ec) {
+                    auto destFile = targetDir / manifestFileName;
+                    if (!std::filesystem::exists(destFile, ec)) {
+                        if (CopyFileW(srcFile.c_str(), destFile.c_str(), FALSE)) {
+                            LOG_INFO("DenuvoSync: mirrored manifest {} -> {}", srcFile.string(), destFile.string());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+} // namespace
+
+void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
+    if (appId == 0 || appId == k_uAppIdInvalid) return;
+
+    const bool hasDPlus = cmdLine && HasCmdLineArg(cmdLine, "-d+");
+    const bool hasLua = LuaConfig::HasDepot(appId, false);
+
+    // 🛑 ABSOLUTE ZERO-OPERATION INVARIANT:
+    // If there is no Lua file configured and no -d+ launch argument,
+    // OST executes ABSOLUTELY ZERO operations. Pure vanilla pass-through!
+    if (!hasLua && !hasDPlus) {
+        ClearDPlusLaunch(appId);
+        return;
+    }
+
+    if (hasDPlus) {
+        std::lock_guard lock(g_dPlusMutex);
+        g_dPlusLaunches.insert(appId);
+        LOG_INFO("DenuvoSync: recorded -d+ launch option for appId={}", appId);
+    } else {
+        ClearDPlusLaunch(appId);
+    }
+
+    // Only genuine owners execute sync or package generation
+    if (LuaConfig::IsOwned(appId) || hasDPlus) {
+        std::string exe = pExePath ? pExePath : "";
+        while (!exe.empty() && (exe.front() == '"' || exe.front() == ' ' || exe.front() == '\t')) exe.erase(0, 1);
+        while (!exe.empty() && (exe.back() == '"' || exe.back() == ' ' || exe.back() == '\t')) exe.pop_back();
+        SyncOrGenerate(appId, exe, hasDPlus);
+    }
+}
+
+bool IsDPlusLaunch(AppId_t appId) {
+    if (appId == 0) return false;
+    std::lock_guard lock(g_dPlusMutex);
+    return g_dPlusLaunches.count(appId) > 0;
+}
+
+void ClearDPlusLaunch(AppId_t appId) {
+    if (appId == 0) return;
+    std::lock_guard lock(g_dPlusMutex);
+    g_dPlusLaunches.erase(appId);
+}
+
+bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
+    if (appId == 0 || appId == k_uAppIdInvalid) return false;
+
+    // Gatekeeper: if nodenuvo is configured, completely skip
+    if (LuaConfig::IsNoDenuvo(appId)) {
+        LOG_INFO("DenuvoSync: nodenuvo set for appId={} — skipping Denuvo sync", appId);
+        return false;
+    }
+
+    const bool hasLua = LuaConfig::HasDepot(appId, false);
+    if (!hasLua && !isDPlus) {
+        return false;
+    }
+
+    // Gatekeeper 2: Denuvo detection
+    // "只要是识别到Denuvo，除非配置了noDenuvo"
+    bool isDenuvo = isDPlus || LuaConfig::IsForcedDenuvo(appId);
+    if (!isDenuvo && !exePath.empty()) {
+        isDenuvo = IsDenuvoPath(OSTPlatform::Encoding::PathFromUtf8(exePath));
+    }
+
+    if (!isDenuvo) {
+        LOG_INFO("DenuvoSync: appId={} is not Denuvo — skipping Denuvo sync", appId);
+        return false;
+    }
+
+    // Determine Lua paths
+    std::filesystem::path luaBaseDir;
+    if (LuaDir[0] != '\0') {
+        luaBaseDir = OSTPlatform::Encoding::PathFromUtf8(LuaDir);
+    } else if (SteamInstallPath[0] != '\0') {
+        luaBaseDir = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "config" / "lua";
+    }
+    if (luaBaseDir.empty()) {
+        LOG_WARN("DenuvoSync: Lua directory undetermined");
+        return false;
+    }
+
+    const auto appLuaDir = luaBaseDir / std::to_string(appId);
+    const auto luaFilePath = appLuaDir / (std::to_string(appId) + ".lua");
+
+    // Locate ACF file
+    auto acfPath = FindAcfPath(appId, exePath);
+    if (acfPath.empty()) {
+        LOG_WARN("DenuvoSync: cannot find ACF for appId={}", appId);
+        return false;
+    }
+
+    AcfData acfData = ParseAcf(acfPath);
+    if (acfData.installedDepots.empty()) {
+        LOG_WARN("DenuvoSync: no installed depots found in {}", acfPath.string());
+        return false;
+    }
+
+    auto depotKeys = ParseConfigVdfKeys(SteamInstallPath);
+    auto ticketBytes = ExtractOwnershipTicket(appId);
+    std::string appTicketHex = ticketBytes.empty() ? "null" : ToHex(ticketBytes.data(), ticketBytes.size());
+
+    std::string eTicketHex = "null";
+    std::vector<uint8_t> storedETicket;
+    if (OSTPlatform::SteamCredentialStore::GetETicket(appId, storedETicket) == OSTPlatform::SteamCredentialStore::Status::Ok && !storedETicket.empty()) {
+        eTicketHex = ToHex(storedETicket.data(), storedETicket.size());
+    }
+
+    std::error_code ec;
+    {
+        std::lock_guard fileLock(g_syncFileMutex);
+        const bool luaFileExists = std::filesystem::exists(luaFilePath, ec) && !ec;
+
+        if (!luaFileExists) {
+            // ── Case 1: First-time generation (-d+) ──────────────────────────────
+            LOG_INFO("DenuvoSync: generating new <AppId>.lua for appId={}", appId);
+            std::vector<std::string> lines;
+            lines.reserve(32);
+            lines.push_back("-- Auto-generated by OpenSteamTool (-d+) for AppID: " + std::to_string(appId));
+            lines.push_back("");
+            lines.push_back("-- Base Game");
+            lines.push_back("addappid(" + std::to_string(appId) + ")");
+
+            for (const auto& [depotId, gid] : acfData.installedDepots) {
+                if (depotId != appId) {
+                    auto itKey = depotKeys.find(depotId);
+                    if (itKey != depotKeys.end() && !itKey->second.empty()) {
+                        lines.push_back("addappid(" + std::to_string(depotId) + ", 1, \"" + itKey->second + "\")");
+                    } else {
+                        lines.push_back("addappid(" + std::to_string(depotId) + ")");
+                    }
+                }
+            }
+
+            lines.push_back("");
+            lines.push_back("-- Locked Manifests (Prevent Auto-Update)");
+            for (const auto& [depotId, gid] : acfData.installedDepots) {
+                if (!gid.empty() && gid != "0") {
+                    lines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                }
+            }
+
+            lines.push_back("");
+            lines.push_back("-- App Ownership Ticket (AppTicket)");
+            lines.push_back("-- setAppTicket(" + std::to_string(appId) + ", \"" + appTicketHex + "\")");
+            lines.push_back("");
+            lines.push_back("-- Encrypted App Ticket (ETicket)");
+            lines.push_back("-- setETicket(" + std::to_string(appId) + ", \"" + eTicketHex + "\")");
+
+            if (!AtomicWriteLines(luaFilePath, lines)) {
+                LOG_ERROR("DenuvoSync: failed to write {}", luaFilePath.string());
+                return false;
+            }
+        } else {
+            // ── Case 2: In-place update / re-locking for existing Lua ────────────
+            LOG_INFO("DenuvoSync: checking and updating existing <AppId>.lua for appId={}", appId);
+            std::ifstream in(luaFilePath);
+            if (!in.is_open()) {
+                LOG_ERROR("DenuvoSync: failed to read {}", luaFilePath.string());
+                return false;
+            }
+
+            std::vector<std::string> lines;
+            std::string line;
+            while (std::getline(in, line)) {
+                lines.push_back(line);
+            }
+            in.close();
+
+            std::unordered_set<uint32_t> handledDepots;
+            int lastManifestLineIdx = -1;
+            int ticketInsertIdx = -1;
+            bool hasAppTicketLine = false;
+            bool hasETicketLine = false;
+
+            for (size_t i = 0; i < lines.size(); ++i) {
+                std::string_view sv = TrimWhitespace(lines[i]);
+                if (sv.empty()) continue;
+
+                std::string lower(sv);
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+                // Check for setManifestid line
+                size_t mPos = lower.find("setmanifestid");
+                if (mPos != std::string::npos) {
+                    lastManifestLineIdx = static_cast<int>(i);
+                    // Extract depotId: setManifestid( <depotId> ,
+                    size_t openParen = lower.find('(', mPos);
+                    size_t comma = lower.find(',', openParen);
+                    if (openParen != std::string::npos && comma != std::string::npos && comma > openParen) {
+                        std::string_view dStr = TrimWhitespace(std::string_view(lower).substr(openParen + 1, comma - openParen - 1));
+                        uint32_t dId = 0;
+                        auto [p, ec2] = std::from_chars(dStr.data(), dStr.data() + dStr.size(), dId);
+                        if (ec2 == std::errc{} && dId != 0) {
+                            auto itDepot = acfData.installedDepots.find(dId);
+                            if (itDepot != acfData.installedDepots.end() && !itDepot->second.empty() && itDepot->second != "0") {
+                                // Enforce active, uncommented lock with latest installed GID
+                                lines[i] = "setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
+                                handledDepots.insert(dId);
+                            }
+                        }
+                    }
+                }
+
+                // Check for setAppTicket line to refresh hex if valid
+                if (lower.find("setappticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
+                    hasAppTicketLine = true;
+                    if (appTicketHex != "null") {
+                        lines[i] = "-- setAppTicket(" + std::to_string(appId) + ", \"" + appTicketHex + "\")";
+                    } else if (!sv.starts_with("--")) {
+                        lines[i] = "-- " + lines[i];
+                    }
+                }
+
+                // Check for setETicket line to refresh hex if valid
+                if (lower.find("seteticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
+                    hasETicketLine = true;
+                    if (eTicketHex != "null") {
+                        lines[i] = "-- setETicket(" + std::to_string(appId) + ", \"" + eTicketHex + "\")";
+                    } else if (!sv.starts_with("--")) {
+                        lines[i] = "-- " + lines[i];
+                    }
+                }
+
+                if (ticketInsertIdx == -1 && (sv.find("App Ownership Ticket") != std::string_view::npos ||
+                                              lower.find("setappticket") != std::string::npos ||
+                                              lower.find("seteticket") != std::string::npos)) {
+                    ticketInsertIdx = static_cast<int>(i);
+                }
+            }
+
+            // Enforce 100% full coverage: insert any missing installed depot manifests (even if user deleted them!)
+            std::vector<std::string> missingManifestLines;
+            for (const auto& [depotId, gid] : acfData.installedDepots) {
+                if (!gid.empty() && gid != "0" && !handledDepots.contains(depotId)) {
+                    missingManifestLines.push_back("setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
+                    LOG_INFO("DenuvoSync: re-inserting missing locked manifest depot={} gid={}", depotId, gid);
+                }
+            }
+
+            if (!missingManifestLines.empty()) {
+                size_t insertPos = lines.size();
+                if (lastManifestLineIdx >= 0) {
+                    insertPos = static_cast<size_t>(lastManifestLineIdx + 1);
+                } else if (ticketInsertIdx >= 0) {
+                    insertPos = static_cast<size_t>(ticketInsertIdx);
+                }
+                lines.insert(lines.begin() + insertPos, missingManifestLines.begin(), missingManifestLines.end());
+            }
+
+            if (!hasAppTicketLine) {
+                lines.push_back("");
+                lines.push_back("-- App Ownership Ticket (AppTicket)");
+                lines.push_back("-- setAppTicket(" + std::to_string(appId) + ", \"" + appTicketHex + "\")");
+            }
+            if (!hasETicketLine) {
+                lines.push_back("");
+                lines.push_back("-- Encrypted App Ticket (ETicket)");
+                lines.push_back("-- setETicket(" + std::to_string(appId) + ", \"" + eTicketHex + "\")");
+            }
+
+            if (!AtomicWriteLines(luaFilePath, lines)) {
+                LOG_ERROR("DenuvoSync: failed to update {}", luaFilePath.string());
+                return false;
+            }
+        }
+    }
+
+    // Immediately load the written/updated Lua configuration into memory
+    LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
+
+    // Mirror .manifest files into <AppId>/ folder
+    CopyManifestMirrors(appId, appLuaDir, acfData, acfPath);
+    LuaConfig::SyncManifests(OSTPlatform::Encoding::PathToUtf8(appLuaDir));
+
+    // Write SteamID.txt for offline ticket impersonation (NEVER WRITE .bin FILES!)
+    const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketBytes);
+    if (ticketSteamId != 0) {
+        if (AppTicket::WriteSteamID(appId, ticketSteamId)) {
+            LOG_INFO("DenuvoSync: persisted SteamID.txt from ticket for appId={} steamid={}", appId, ticketSteamId);
+        }
+    } else {
+        uint32_t accountId = 0;
+        std::wstring universe;
+        if (OSTPlatform::SteamCredentialStore::GetActiveUser(accountId, universe) == OSTPlatform::SteamCredentialStore::Status::Ok && accountId != 0) {
+            EUniverse u = k_EUniversePublic;
+            if (_wcsicmp(universe.c_str(), L"Beta") == 0) u = k_EUniverseBeta;
+            else if (_wcsicmp(universe.c_str(), L"Internal") == 0) u = k_EUniverseInternal;
+            else if (_wcsicmp(universe.c_str(), L"Dev") == 0) u = k_EUniverseDev;
+
+            CSteamID steamId;
+            steamId.Set(accountId, u, k_EAccountTypeIndividual);
+            if (AppTicket::WriteSteamID(appId, steamId.ConvertToUint64())) {
+                LOG_INFO("DenuvoSync: persisted SteamID.txt from active user for appId={} steamid={}", appId, steamId.ConvertToUint64());
+            }
+        }
+    }
+
+    return true;
+}
+
+void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
+    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
+    if (LuaConfig::IsNoDenuvo(appId)) return;
+
+    // 1. Store in memory in SteamCredentialStore
+    std::vector<uint8_t> ticketVec(data, data + size);
+    AppTicket::WriteEncryptedTicket(appId, ticketVec);
+
+    // 2. Format ticket bytes as hex
+    std::string hex = ToHex(data, size);
+
+    // 3. Locate and update <AppId>.lua
+    std::filesystem::path luaBaseDir;
+    if (LuaDir[0] != '\0') {
+        luaBaseDir = OSTPlatform::Encoding::PathFromUtf8(LuaDir);
+    } else if (SteamInstallPath[0] != '\0') {
+        luaBaseDir = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "config" / "lua";
+    }
+    if (luaBaseDir.empty()) return;
+
+    const auto luaFilePath = luaBaseDir / std::to_string(appId) / (std::to_string(appId) + ".lua");
+    bool wrote = false;
+    {
+        std::error_code ec;
+        std::lock_guard fileLock(g_syncFileMutex);
+        if (!std::filesystem::exists(luaFilePath, ec) || ec) return;
+
+        std::ifstream in(luaFilePath);
+        if (!in.is_open()) return;
+
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(in, line)) {
+            lines.push_back(line);
+        }
+        in.close();
+
+        bool updated = false;
+        for (auto& l : lines) {
+            std::string_view sv = TrimWhitespace(l);
+            std::string lower(sv);
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lower.find("seteticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
+                l = "-- setETicket(" + std::to_string(appId) + ", \"" + hex + "\")";
+                updated = true;
+                break;
+            }
+        }
+
+        if (!updated) {
+            lines.push_back("");
+            lines.push_back("-- Encrypted App Ticket (ETicket)");
+            lines.push_back("-- setETicket(" + std::to_string(appId) + ", \"" + hex + "\")");
+        }
+
+        wrote = AtomicWriteLines(luaFilePath, lines);
+    }
+
+    if (wrote) {
+        LOG_INFO("DenuvoSync: successfully refreshed ETicket hex in {} (size={})", luaFilePath.string(), size);
+        LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
+    }
+}
+
+} // namespace PipeManager::DenuvoAuth

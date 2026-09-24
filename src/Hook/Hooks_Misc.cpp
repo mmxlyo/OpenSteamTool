@@ -2,6 +2,7 @@
 #include "HookMacros.h"
 #include "Utils/HookSupport/VehCommon.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "dllmain.h"
 
 #include <algorithm>
@@ -57,7 +58,10 @@ namespace {
         CGameID* pGameID = VehCommon::GetArg<CGameID*>(ctx, 5);
         if (!pGameID) return;
         AppId_t appId = static_cast<AppId_t>(pGameID->AppID(true));
+        const char* pExePath = VehCommon::GetArg<const char*>(ctx, 2);
         const char* cmdLine = VehCommon::GetArg<const char*>(ctx, 3);
+
+        PipeManager::DenuvoAuth::OnSpawnProcess(appId, pExePath, cmdLine);
 
         if (cmdLine && HasCmdLineArg(cmdLine, "-onlinefix"))
         {

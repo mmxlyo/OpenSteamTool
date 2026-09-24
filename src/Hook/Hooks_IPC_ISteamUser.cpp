@@ -5,6 +5,7 @@
 #include "Utils/Tickets/EticketClient.h"
 #include "Pipe/PipeManager.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Logging/Log.h"
 #include "Hooks_Misc.h"
 #include "Utils/Config/LuaConfig.h"
@@ -144,7 +145,7 @@ namespace {
             // spoof (also sourced from the credential store via CredentialStoreThenForge)
             // — no error-54 risk. This fixes error 05 for games launched more than
             // 30 min after activation (stored ticket expired, fresh mint is current).
-            if (existingSteamId != 0) {
+            if (!LuaConfig::IsOwned(appId) && existingSteamId != 0) {
                 if (auto fresh = EticketClient::FetchFreshEticket(appId, nonce, existingSteamId)) {
                     std::lock_guard<std::mutex> lock(g_freshEticketMutex);
                     g_freshEticket[appId] = std::move(*fresh);
@@ -174,14 +175,35 @@ namespace {
     void HandlerPost_IClientUser_GetEncryptedAppTicket(CPipeClient* pipe, CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
         AppId_t appId = Hooks_Misc::ResolveAppId();
-        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
+        if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
         // Refresh the Denuvo authorization lease window when reading the encrypted ticket.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
 
-        // Prefer a fresh nonce-bound ticket minted in RequestEncryptedAppTicket;
-        // fall back to the static credential-store ticket (titles that don't
-        // need the on-demand path keep working unchanged).
+        // 1. If Steam client returned a genuine encrypted ticket (e.g. authorized account):
+        GetEncryptedAppTicketResp existingResp{pWrite};
+        if (existingResp.ok() && existingResp.returnValue()) {
+            auto ticketSpan = existingResp.pTicket();
+            if (!ticketSpan.empty()) {
+                if (LuaConfig::IsOwned(appId)) {
+                    LOG_IPC_INFO("GetEncryptedAppTicket: AppId={} captured genuine eticket ({} bytes) from Steam",
+                                 appId, ticketSpan.size());
+                    PipeManager::DenuvoAuth::OnEncryptedTicketCaptured(appId, ticketSpan.data(), ticketSpan.size());
+                }
+                return;
+            } else if (existingResp.pcbTicket() > 0) {
+                // Buffer size inquiry (game passed nullptr or 0-length buffer)
+                return;
+            }
+        }
+
+        // For owned games, Steam client natively manages genuine tickets.
+        // If Steam returned no ticket (e.g. offline/network error), never overwrite pWrite with cached/stale ticket.
+        if (LuaConfig::IsOwned(appId)) {
+            return;
+        }
+
+        // 2. Fallback to cached or freshly minted tickets (offline / unowned accounts)
         std::vector<uint8_t> ticket;
         {
             std::lock_guard<std::mutex> lock(g_freshEticketMutex);
