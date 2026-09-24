@@ -2,7 +2,10 @@
 
 #include "OSTPlatform/include/Memory.h"
 
+#include <shared_mutex>
+
 namespace {
+    std::shared_mutex g_sitesMutex;
     std::vector<VehCommon::Int3Site> g_sites;
     OSTPlatform::Trap::HandlerHandle g_vehHandle = nullptr;
 }
@@ -30,15 +33,20 @@ static void RestoreByte(void* target, uint8_t original) {
 
 void Arm(Int3Site site) {
     EnsureHandlerInstalled();
-    g_sites.push_back(site);
+    {
+        std::unique_lock lock(g_sitesMutex);
+        g_sites.push_back(site);
+    }
     ArmInt3(site.target);
 }
 
 bool HasSites() {
+    std::shared_lock lock(g_sitesMutex);
     return !g_sites.empty();
 }
 
 bool OnBreakpoint(OSTPlatform::Trap::Context& ctx) {
+    std::shared_lock lock(g_sitesMutex);
     for (auto& site : g_sites) {
         if (!site.target || !IsAt(ctx.InstructionPointer(), site.target)) continue;
 
@@ -61,6 +69,7 @@ bool OnBreakpoint(OSTPlatform::Trap::Context& ctx) {
 }
 
 bool OnSingleStep(OSTPlatform::Trap::Context& ctx) {
+    std::shared_lock lock(g_sitesMutex);
     for (auto& site : g_sites) {
         if (!site.persistent || !site.target) continue;
         if (!IsPostInt3Step(ctx.InstructionPointer(), site.target)) continue;
@@ -70,7 +79,16 @@ bool OnSingleStep(OSTPlatform::Trap::Context& ctx) {
     return false;
 }
 
+void RemoveHandler() {
+    if (g_vehHandle) {
+        OSTPlatform::Trap::RemoveVectoredHandler(g_vehHandle);
+        g_vehHandle = nullptr;
+    }
+}
+
 void DisarmAll() {
+    RemoveHandler();
+    std::unique_lock lock(g_sitesMutex);
     for (auto& site : g_sites) {
         if (site.target && *site.target == 0xCC) {
             RestoreByte(site.target, site.originalByte);
@@ -79,11 +97,5 @@ void DisarmAll() {
     g_sites.clear();
 }
 
-void RemoveHandler() {
-    if (g_vehHandle) {
-        OSTPlatform::Trap::RemoveVectoredHandler(g_vehHandle);
-        g_vehHandle = nullptr;
-    }
-}
-
 } // namespace VehCommon
+

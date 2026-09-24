@@ -179,6 +179,11 @@ void ProcessChanges(const std::vector<FileChange>& changes) {
 }
 
 void WatcherThread() {
+    struct RunningGuard {
+        std::atomic<bool>& flag;
+        ~RunningGuard() { flag.store(false, std::memory_order_release); }
+    } runningGuard{g_running};
+
     const size_t numDirs = g_watchDirs.size();
     std::vector<OSTPlatform::DirectoryWatch::Watch> watches(numDirs);
     std::vector<OSTPlatform::DirectoryWatch::Watch*> watchPtrs(numDirs, nullptr);

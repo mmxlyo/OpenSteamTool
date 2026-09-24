@@ -61,7 +61,7 @@ namespace AppTicket {
         
         if (source == AppTicketSource::CredentialStoreOnly || source == AppTicketSource::CredentialStoreThenForge) {
             ticket.data = GetAppOwnershipTicketFromCredentialStore(appId);
-            if (!ticket.data.empty() && ticket.data.size() >= sizeof(uint32)) {
+            if (!ticket.data.empty() && ticket.data.size() >= kSteamIdTicketMinimumSize) {
                 ticket.totalSize = static_cast<uint32>(ticket.data.size());
                 ticket.appIdOffset = kAppTicketAppIdOffset;
                 ticket.steamIdOffset = kAppTicketSteamIdOffset;

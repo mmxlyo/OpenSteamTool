@@ -8,6 +8,7 @@
 #include "Utils/SteamMetadata/SteamDiagnostics.h"
 #include "Utils/Support/FnvHash.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -275,6 +276,10 @@ void* FindPattern(OSTPlatform::DynamicLibrary::ModuleHandle module, const char* 
 void ReportMissingFunctions()
 {
     if (g_missingFunctions.empty()) return;
+
+    std::sort(g_missingFunctions.begin(), g_missingFunctions.end());
+    g_missingFunctions.erase(std::unique(g_missingFunctions.begin(), g_missingFunctions.end()),
+                             g_missingFunctions.end());
 
     // Build the list
     std::string list;

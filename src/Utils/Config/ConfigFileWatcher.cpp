@@ -89,6 +89,11 @@ void ReloadConfig() {
 }
 
 void WatcherThread() {
+    struct RunningGuard {
+        std::atomic<bool>& flag;
+        ~RunningGuard() { flag.store(false, std::memory_order_release); }
+    } runningGuard{g_running};
+
     const std::filesystem::path configPath = OSTPlatform::Encoding::PathFromUtf8(g_configPath);
     const std::filesystem::path dirPath = configPath.parent_path();
     const std::string dirPathUtf8 = OSTPlatform::Encoding::PathToUtf8(dirPath);

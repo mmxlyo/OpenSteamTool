@@ -27,6 +27,19 @@ namespace {
     std::mutex g_mutex;
     bool g_loadedOnce = false;
 
+    uint32_t manifestTimeoutResolve = 5000;
+    uint32_t manifestTimeoutConnect = 5000;
+    uint32_t manifestTimeoutSend    = 10000;
+    uint32_t manifestTimeoutRecv    = 10000;
+    LogLevel logLevel = LogLevel::Debug;
+    std::string logDir;
+    std::vector<std::string> luaPaths;
+    std::string remoteUrlTemplate;
+    bool statsEnableApi = true;
+    std::vector<InjectDll> injectDlls;
+    bool cloudEnabled = false;
+    std::string cloudLibrary;
+
     const char* ToString(LogLevel level) {
         switch (level) {
         case LogLevel::Trace: return "trace";

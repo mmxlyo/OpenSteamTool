@@ -1,6 +1,7 @@
 #include "EticketClient.h"
 
 #include "OSTPlatform/include/Http.h"
+#include "OSTPlatform/include/Numbers.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Logging/Log.h"
 
@@ -114,6 +115,35 @@ namespace {
         return !out.empty();
     }
 
+    bool ExtractUInt64Field(std::string_view body, std::string_view key, uint64_t& out) {
+        std::string str;
+        if (ExtractStringField(body, key, str)) {
+            const auto parsed = OSTPlatform::Numbers::ParseUInt64(str);
+            if (parsed) {
+                out = *parsed;
+                return true;
+            }
+        }
+        const std::string needle = std::string("\"") + std::string(key) + "\"";
+        size_t k = body.find(needle);
+        if (k == std::string_view::npos) return false;
+        size_t colon = body.find(':', k + needle.size());
+        if (colon == std::string_view::npos) return false;
+        size_t start = colon + 1;
+        while (start < body.size() && (body[start] == ' ' || body[start] == '\t' || body[start] == '\r' || body[start] == '\n')) {
+            ++start;
+        }
+        size_t end = body.find_first_of(",} \t\r\n", start);
+        std::string_view numStr = body.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
+        if (numStr.empty()) return false;
+        const auto parsed = OSTPlatform::Numbers::ParseUInt64(numStr);
+        if (parsed) {
+            out = *parsed;
+            return true;
+        }
+        return false;
+    }
+
     // Single backend mint → both tickets. Cached per app on success; failures are
     // not cached so the next call (the game retries ownership/eticket) re-attempts
     // — except a "no owning account" verdict, which is sticky for the session.
@@ -215,9 +245,7 @@ namespace {
 
         // Remember which pool account the backend minted under, so a later call
         // whose registry account differs triggers the eviction above.
-        if (ExtractStringField(r.body, "steam_id", hex)) {
-            fetched.steamId = std::strtoull(hex.c_str(), nullptr, 10);
-        }
+        ExtractUInt64Field(r.body, "steam_id", fetched.steamId);
 
         {
             std::lock_guard<std::mutex> lock(g_mutex);

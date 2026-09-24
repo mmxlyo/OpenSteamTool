@@ -19,12 +19,19 @@ namespace {
         std::vector<Interface> interfaces;
         std::unordered_map<EIPCInterface, size_t> byID;
         std::unordered_map<std::string, size_t> byName;
+        std::unordered_map<uint64_t, const Method*> byMethodHash;
+
+        static uint64_t MakeMethodKey(EIPCInterface interfaceID, uint32_t funcHash)
+        {
+            return (static_cast<uint64_t>(interfaceID) << 32) | static_cast<uint64_t>(funcHash);
+        }
 
         void Clear()
         {
             interfaces.clear();
             byID.clear();
             byName.clear();
+            byMethodHash.clear();
         }
 
         void Add(Interface iface)
@@ -35,12 +42,26 @@ namespace {
             interfaces.push_back(std::move(iface));
         }
 
+        void BuildIndex()
+        {
+            byMethodHash.clear();
+            for (const auto& iface : interfaces) {
+                for (const auto& method : iface.methods) {
+                    byMethodHash[MakeMethodKey(method.interfaceID, method.funcHash)] = &method;
+                }
+            }
+        }
+
         const Method* Find(EIPCInterface interfaceID, uint32_t funcHash) const
         {
-            const auto it = byID.find(interfaceID);
-            if (it == byID.end()) return nullptr;
+            const auto it = byMethodHash.find(MakeMethodKey(interfaceID, funcHash));
+            if (it != byMethodHash.end()) return it->second;
 
-            for (const auto& method : interfaces[it->second].methods) {
+            // Fallback if index has not been built
+            const auto ifaceIt = byID.find(interfaceID);
+            if (ifaceIt == byID.end()) return nullptr;
+
+            for (const auto& method : interfaces[ifaceIt->second].methods) {
                 if (method.funcHash == funcHash) return &method;
             }
             return nullptr;
@@ -188,6 +209,8 @@ bool Load(const std::string& steamclientPath)
 
         g_registry.Add(std::move(iface));
     }
+
+    g_registry.BuildIndex();
 
     LOG_INFO("IPCLoader: loaded {} methods across {} interfaces ({})",
              MethodCount(), InterfaceCount(),

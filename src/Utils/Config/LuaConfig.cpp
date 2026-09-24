@@ -35,21 +35,21 @@ namespace LuaConfig{
     static lua_State* g_lua_state = nullptr;
     static std::atomic<bool> g_hasManifestCodeFunc{false};
     static std::atomic<bool> g_hasManifestCodeFuncEx{false};
-    std::unordered_map<AppId_t, std::string>DepotKeySet{};
-    std::unordered_map<AppId_t, uint64_t>AccessTokenSet{};
-    std::unordered_set<AppId_t> PinnedApps{};
-    std::unordered_map<uint64_t, ManifestOverride> ManifestOverrides{};
-    std::unordered_map<AppId_t, uint64_t> StatSteamIdSet{};
-    std::unordered_set<AppId_t> OwnedAppIdSet{};
+    static std::unordered_map<AppId_t, std::string> DepotKeySet{};
+    static std::unordered_map<AppId_t, uint64_t> AccessTokenSet{};
+    static std::unordered_set<AppId_t> PinnedApps{};
+    static std::unordered_map<uint64_t, ManifestOverride> ManifestOverrides{};
+    static std::unordered_map<AppId_t, uint64_t> StatSteamIdSet{};
+    static std::unordered_set<AppId_t> OwnedAppIdSet{};
     // Process exe name (lowercase) → appid; populated by addprocess() in Lua config.
-    std::unordered_map<std::string, AppId_t> ProcessNameAppIdMap{};
+    static std::unordered_map<std::string, AppId_t> ProcessNameAppIdMap{};
     // App IDs that should bypass ProtectionScan and be treated as Denuvo games.
-    std::unordered_set<AppId_t> ForcedDenuvoSet{};
+    static std::unordered_set<AppId_t> ForcedDenuvoSet{};
     // App IDs that should bypass ProtectionScan and be treated as non-Denuvo games.
-    std::unordered_set<AppId_t> NoDenuvoSet{};
+    static std::unordered_set<AppId_t> NoDenuvoSet{};
     // On-demand eticket mint endpoint, set via seteticketurl() in Lua config.
     // Empty = disabled (EticketClient falls back to credential-store ticket).
-    std::string EticketUrl{};
+    static std::string EticketUrl{};
 
     // Per-file tracking: which depots each .lua file contributed.
     static std::string g_currentFile;

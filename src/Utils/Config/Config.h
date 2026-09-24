@@ -46,33 +46,4 @@ namespace Config {
     CloudSettings GetCloudSettings();
     bool GetStatsEnableApi();
     std::vector<InjectDll> GetInjectDlls();
-
-    // [manifest] — provider selection lives in ManifestClient (table-driven).
-    inline uint32_t manifestTimeoutResolve = 5000;
-    inline uint32_t manifestTimeoutConnect = 5000;
-    inline uint32_t manifestTimeoutSend    = 10000;
-    inline uint32_t manifestTimeoutRecv    = 10000;
-
-    // [log]
-    inline LogLevel logLevel = LogLevel::Debug;
-
-    // derived from configPath: <steam>/opensteamtool/
-    inline std::string logDir;
-
-    // [lua]
-    inline std::vector<std::string> luaPaths;
-
-    // [remote]
-    inline std::string remoteUrlTemplate;
-
-    // [stats]
-    inline bool statsEnableApi = true;
-
-    // [[inject]] - optional DLL injection into matching game processes.
-    inline std::vector<InjectDll> injectDlls;
-
-    // [cloud] - optional Steam Cloud save redirection via CloudRedirect.
-    inline bool cloudEnabled = false;
-    inline std::string cloudLibrary;
-
 }
