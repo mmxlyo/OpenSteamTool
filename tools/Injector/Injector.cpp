@@ -96,7 +96,15 @@ namespace Injector {
             return false;
         }
 
-        WaitForSingleObject(hThread, INFINITE);
+        DWORD waitRes = WaitForSingleObject(hThread, 15000);
+        if (waitRes != WAIT_OBJECT_0) {
+            if (!isSilent) {
+                std::wcerr << L"[-] Remote thread execution timed out or failed (waitRes=" << waitRes << L")." << std::endl;
+            }
+            CloseHandle(hThread);
+            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+            return false;
+        }
 
         DWORD exitCode = 0;
         GetExitCodeThread(hThread, &exitCode);
@@ -400,7 +408,8 @@ namespace Injector {
 
         STARTUPINFOW si = { sizeof(si) };
         PROCESS_INFORMATION pi = { 0 };
-        std::vector<wchar_t> cmdBuffer(exePath.begin(), exePath.end());
+        std::wstring quotedCmd = L"\"" + exePath + L"\"";
+        std::vector<wchar_t> cmdBuffer(quotedCmd.begin(), quotedCmd.end());
         cmdBuffer.push_back(L'\0');
 
         std::cout << "[+] Launching Steam executable..." << std::endl;
