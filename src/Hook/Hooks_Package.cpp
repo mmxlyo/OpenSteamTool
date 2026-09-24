@@ -110,7 +110,13 @@ namespace {
 
         if (LuaConfig::HasDepot(appId, false)) {
             if (pOwn) {
-                if (result && pOwn->ExistInPackageNums > 1) {
+                const bool isTrulyOwned = result &&
+                                          (pOwn->PackageId != kInjectedPackageId) &&
+                                          (pOwn->PackageId != 0) &&
+                                          (pOwn->ExistInPackageNums > 1) &&
+                                          !pOwn->bFamilyShared &&
+                                          !pOwn->bBorrowed;
+                if (isTrulyOwned) {
                     // Actually owned — record so HasDepot excludes it going forward
                     LuaConfig::MarkOwned(appId);
                     pOwn->ReleaseState = EAppReleaseState::Released;
@@ -123,6 +129,10 @@ namespace {
                 }
             } else {
                 return true;
+            }
+        } else {
+            if (!result && pOwn) {
+                pOwn->bOwnsLicense = false;
             }
         }
 
@@ -152,6 +162,10 @@ namespace Hooks_Package {
     void NotifyLicenseChanged() {
         PackageInfo* pPkg = g_pInjectedPackageInfo.load(std::memory_order_acquire);
         if (!pPkg) {
+            TryInitFakeLicenseOnce();
+            pPkg = g_pInjectedPackageInfo.load(std::memory_order_acquire);
+        }
+        if (!pPkg) {
             LOG_PACKAGE_WARN("NotifyLicenseChanged: injected PackageInfo not ready, cannot notify");
             return;
         }
@@ -166,11 +180,9 @@ namespace Hooks_Package {
             std::lock_guard lock(g_packageInfoMutex);
             LOG_PACKAGE_DEBUG("NotifyLicenseChanged: processing {} removals", removals.size());
             for (AppId_t id : removals) {
-                if (pPkg->AppIdVec.FindAndFastRemove(id)) {
+                while (pPkg->AppIdVec.FindAndFastRemove(id)) {
                     ++removedCount;
                     LOG_PACKAGE_DEBUG("NotifyLicenseChanged: removed AppId {}", id);
-                } else {
-                    LOG_PACKAGE_WARN("NotifyLicenseChanged: AppId {} not found in package AppIdVec during removal", id);
                 }
             }
 
@@ -178,26 +190,40 @@ namespace Hooks_Package {
             LOG_PACKAGE_DEBUG("NotifyLicenseChanged: processing {} additions", additions.size());
             if (!additions.empty()) {
                 addedIds.reserve(additions.size());
-                uint32_t oldSize = pPkg->AppIdVec.m_Size;
-                if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, static_cast<int>(additions.size()))) {
-                    // An applied addition invalidates any UI removal that has not
-                    // reached the UI thread yet.
-                    for (AppId_t id : additions)
-                        Hooks_SteamUI::CancelRemoval(id);
+                std::vector<AppId_t> toAdd;
+                toAdd.reserve(additions.size());
+                for (AppId_t id : additions) {
+                    Hooks_SteamUI::CancelRemoval(id);
+                    addedIds.insert(id);
 
-                    for (size_t i = 0; i < additions.size(); ++i) {
-                        pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = additions[i];
-                        addedIds.insert(additions[i]);
-                        LOG_PACKAGE_DEBUG("NotifyLicenseChanged: inserted AppId {} at [{}]", additions[i], oldSize + i);
+                    bool alreadyPresent = false;
+                    for (uint32_t i = 0; i < pPkg->AppIdVec.m_Size; ++i) {
+                        if (pPkg->AppIdVec.m_Memory.m_pMemory[i] == id) {
+                            alreadyPresent = true;
+                            break;
+                        }
                     }
-                    pPkg->AppIdVec.m_Size = oldSize + static_cast<uint32_t>(additions.size());
-                } else {
-                    LOG_PACKAGE_WARN("NotifyLicenseChanged: failed to grow AppId vector for additions");
+                    if (!alreadyPresent) {
+                        toAdd.push_back(id);
+                    }
+                }
+
+                if (!toAdd.empty()) {
+                    uint32_t oldSize = pPkg->AppIdVec.m_Size;
+                    if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, static_cast<int>(toAdd.size()))) {
+                        for (size_t i = 0; i < toAdd.size(); ++i) {
+                            pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = toAdd[i];
+                            LOG_PACKAGE_DEBUG("NotifyLicenseChanged: inserted AppId {} at [{}]", toAdd[i], oldSize + i);
+                        }
+                        pPkg->AppIdVec.m_Size = oldSize + static_cast<uint32_t>(toAdd.size());
+                    } else {
+                        LOG_PACKAGE_WARN("NotifyLicenseChanged: failed to grow AppId vector for additions");
+                    }
                 }
             }
         }
 
-        if (addedIds.empty() && removedCount == 0) {
+        if (addedIds.empty() && removals.empty()) {
             LOG_PACKAGE_DEBUG("NotifyLicenseChanged: no changes");
             return;
         }
@@ -205,9 +231,9 @@ namespace Hooks_Package {
         // Mark package 0 as changed and trigger library refresh.
         if (!MarkLicenseAsChangedAndProcessUpdates()) {
             LOG_PACKAGE_WARN("NotifyLicenseChanged: failed to mark license as changed");
-            return;
+        } else {
+            LOG_PACKAGE_INFO("NotifyLicenseChanged: {} added, {} removed", addedIds.size(), removedCount);
         }
-        LOG_PACKAGE_INFO("NotifyLicenseChanged: {} added, {} removed", addedIds.size(), removedCount);
 
         // Queue UI removals for the main-thread RunFrame hook to drain.
         // Never touch MarkAppChange from this (FileWatcher) thread.

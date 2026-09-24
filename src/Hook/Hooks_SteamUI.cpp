@@ -245,35 +245,77 @@ namespace
     // the full snapshot skips it); MarkAppChange triggers the flush.
     HOOK_FUNC(CSteamUIAppControllerRunFrame, void *, void *pController)
     {
+        if (pController && !g_pController)
+        {
+            g_pController = pController;
+        }
+
         if (CAPTURE_READY(GetAppByID) && CAPTURE_READY(MarkAppChange))
         {
             std::vector<AppId_t> draining;
             {
                 std::lock_guard<std::mutex> lock(g_removalMutex);
-                draining.swap(g_pendingRemovals);
-            }
-            std::vector<AppId_t> newlyRemoved;
-            for (AppId_t appId : draining)
-            {
-                if (LuaConfig::IsOwned(appId))
-                {
-                    LOG_STEAMUI_DEBUG("RunFrame: appId {} is owned again, skipping removal", appId);
-                    continue;
+                if (!g_pendingRemovals.empty()) {
+                    draining.swap(g_pendingRemovals);
                 }
-                if (CSteamApp *pApp = oGetAppByID(g_pController, appId, false))
+            }
+
+            if (!draining.empty())
+            {
+                std::vector<AppId_t> newlyRemoved;
+                std::vector<AppId_t> parentsToNotify;
+
+                for (AppId_t appId : draining)
                 {
-                    // Only remove from the library if it's not already uninstalled
-                    pApp->OwnershipFlags = k_EAppOwnershipFlags_None;
-                    if (pApp->AppStateFlags == k_EAppStateUninstalled) {
-                        newlyRemoved.push_back(appId);
+                    if (LuaConfig::IsOwned(appId) || LuaConfig::HasDepot(appId, false))
+                    {
+                        LOG_STEAMUI_DEBUG("RunFrame: appId {} is still owned or active in config, skipping removal", appId);
+                        continue;
+                    }
+
+                    if (CSteamApp *pApp = oGetAppByID(g_pController, appId, false))
+                    {
+                        pApp->OwnershipFlags = k_EAppOwnershipFlags_None;
+                        pApp->PurchasedTime = 0;
+                        pApp->MasterSubAppID = 0;
+
+                        const bool isDlc = ((pApp->eProtoAppType & 32) != 0) ||
+                                           (pApp->ParentAppID != 0 && pApp->ParentAppID != k_uAppIdInvalid);
+
+                        if (isDlc)
+                        {
+                            if (pApp->ParentAppID != 0 && pApp->ParentAppID != k_uAppIdInvalid && pApp->ParentAppID != appId)
+                            {
+                                if (std::ranges::find(parentsToNotify, pApp->ParentAppID) == parentsToNotify.end())
+                                {
+                                    parentsToNotify.push_back(pApp->ParentAppID);
+                                }
+                            }
+                            newlyRemoved.push_back(appId);
+                        }
+                        else if (pApp->AppStateFlags == k_EAppStateUninstalled)
+                        {
+                            newlyRemoved.push_back(appId);
+                        }
+                    }
+
+                    oMarkAppChange(g_pAppChangeSource, appId, EAppChangeFlags::AppInfoOrConfig);
+                }
+
+                for (AppId_t parentId : parentsToNotify)
+                {
+                    if (std::ranges::find(draining, parentId) == draining.end())
+                    {
+                        LOG_STEAMUI_INFO("RunFrame: notifying parent appId {} of DLC change", parentId);
+                        oMarkAppChange(g_pAppChangeSource, parentId, EAppChangeFlags::AppInfoOrConfig);
                     }
                 }
-                
-                oMarkAppChange(g_pAppChangeSource, appId, EAppChangeFlags::AppInfoOrConfig);
-            }
-            if (!newlyRemoved.empty()) {
-                std::lock_guard<std::mutex> lock(g_removalMutex);
-                g_removedAppIds.insert(newlyRemoved.begin(), newlyRemoved.end());
+
+                if (!newlyRemoved.empty())
+                {
+                    std::lock_guard<std::mutex> lock(g_removalMutex);
+                    g_removedAppIds.insert(newlyRemoved.begin(), newlyRemoved.end());
+                }
             }
         }
         return oCSteamUIAppControllerRunFrame(pController);
