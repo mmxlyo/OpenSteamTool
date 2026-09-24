@@ -5,7 +5,6 @@
 #include "Utils/Tickets/EticketClient.h"
 #include "Pipe/PipeManager.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
-#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Logging/Log.h"
 #include "Hooks_Misc.h"
 #include "Utils/Config/LuaConfig.h"
@@ -66,14 +65,9 @@ namespace {
         if (appId == 0) return;
 
         // If Steam's genuine implementation already returned a valid ticket (account owns the game),
-        // capture it dynamically to refresh credentials and update <AppId>.lua, without tampering.
+        // leave it untouched and pass through cleanly.
         GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
         if (origResp.ok() && origResp.returnValue() > 0) {
-            auto ticketSpan = origResp.pTicket();
-            const size_t ticketLen = (std::min)(static_cast<size_t>(origResp.returnValue()), ticketSpan.size());
-            if (ticketLen > 0) {
-                PipeManager::DenuvoAuth::OnOwnershipTicketCaptured(appId, ticketSpan.data(), ticketLen);
-            }
             return;
         }
 
@@ -198,15 +192,7 @@ namespace {
         GetEncryptedAppTicketResp existingResp{pWrite};
         if (existingResp.ok() && existingResp.returnValue()) {
             auto ticketSpan = existingResp.pTicket();
-            if (!ticketSpan.empty()) {
-                if (LuaConfig::IsOwned(appId)) {
-                    LOG_IPC_INFO("GetEncryptedAppTicket: AppId={} captured genuine eticket ({} bytes) from Steam",
-                                 appId, ticketSpan.size());
-                    PipeManager::DenuvoAuth::OnEncryptedTicketCaptured(appId, ticketSpan.data(), ticketSpan.size());
-                }
-                return;
-            } else if (existingResp.pcbTicket() > 0) {
-                // Buffer size inquiry (game passed nullptr or 0-length buffer)
+            if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
                 return;
             }
         }

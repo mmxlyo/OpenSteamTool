@@ -4,7 +4,6 @@
 #include "Utils/Logging/Log.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Tickets/AppTicket.h"
-#include "OSTPlatform/include/SteamCredentialStore.h"
 #include "OSTPlatform/include/Encoding.h"
 #include "Steam/Structs.h"
 #include "Steam/Enums.h"
@@ -116,17 +115,6 @@ namespace {
         }
 
         return tokens;
-    }
-
-    std::string ToHex(const uint8_t* data, size_t size) {
-        static constexpr char kHex[] = "0123456789abcdef";
-        std::string s;
-        s.reserve(size * 2);
-        for (size_t i = 0; i < size; ++i) {
-            s.push_back(kHex[(data[i] >> 4) & 0xF]);
-            s.push_back(kHex[data[i] & 0xF]);
-        }
-        return s;
     }
 
     std::filesystem::path FindAcfPath(AppId_t appId, const std::string& exePath) {
@@ -331,12 +319,6 @@ namespace {
         }
 
         return keys;
-    }
-
-    std::vector<uint8_t> ExtractOwnershipTicket(AppId_t appId) {
-        auto ticket = AppTicket::GetAppOwnershipTicketFromCredentialStore(appId);
-        LOG_INFO("DenuvoSync: retrieved ticket from credential store for appId={}, size={}", appId, ticket.size());
-        return ticket;
     }
 
     bool AtomicWriteLines(const std::filesystem::path& targetPath, const std::vector<std::string>& lines) {
@@ -565,14 +547,6 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
 
     auto depotKeys = ParseConfigVdfKeys(SteamInstallPath);
     LOG_INFO("DenuvoSync: parsed config.vdf keys: count={}", depotKeys.size());
-    auto ticketBytes = ExtractOwnershipTicket(appId);
-    std::string appTicketHex = ticketBytes.empty() ? "null" : ToHex(ticketBytes.data(), ticketBytes.size());
-
-    std::string eTicketHex = "null";
-    std::vector<uint8_t> storedETicket;
-    if (OSTPlatform::SteamCredentialStore::GetETicket(appId, storedETicket) == OSTPlatform::SteamCredentialStore::Status::Ok && !storedETicket.empty()) {
-        eTicketHex = ToHex(storedETicket.data(), storedETicket.size());
-    }
 
     std::error_code ec;
     const bool shouldLockManifest = Config::GetDenuvoLockManifest();
@@ -613,13 +587,6 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                 }
             }
 
-            lines.push_back("");
-            lines.push_back("-- App Ownership Ticket (AppTicket)");
-            lines.push_back("-- setAppTicket(" + std::to_string(appId) + ", \"" + appTicketHex + "\")");
-            lines.push_back("");
-            lines.push_back("-- Encrypted App Ticket (ETicket)");
-            lines.push_back("-- setETicket(" + std::to_string(appId) + ", \"" + eTicketHex + "\")");
-
             if (!AtomicWriteLines(luaFilePath, lines)) {
                 LOG_ERROR("DenuvoSync: failed to write {}", luaFilePath.string());
                 return false;
@@ -642,9 +609,6 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
 
             std::unordered_set<uint32_t> handledDepots;
             int lastManifestLineIdx = -1;
-            int ticketInsertIdx = -1;
-            bool hasAppTicketLine = false;
-            bool hasETicketLine = false;
 
             for (size_t i = 0; i < lines.size(); ++i) {
                 std::string_view sv = TrimWhitespace(lines[i]);
@@ -677,32 +641,6 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                         }
                     }
                 }
-
-                // Check for setAppTicket line to refresh hex if valid
-                if (lower.find("setappticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
-                    hasAppTicketLine = true;
-                    if (appTicketHex != "null") {
-                        lines[i] = "-- setAppTicket(" + std::to_string(appId) + ", \"" + appTicketHex + "\")";
-                    } else if (!sv.starts_with("--")) {
-                        lines[i] = "-- " + lines[i];
-                    }
-                }
-
-                // Check for setETicket line to refresh hex if valid
-                if (lower.find("seteticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
-                    hasETicketLine = true;
-                    if (eTicketHex != "null") {
-                        lines[i] = "-- setETicket(" + std::to_string(appId) + ", \"" + eTicketHex + "\")";
-                    } else if (!sv.starts_with("--")) {
-                        lines[i] = "-- " + lines[i];
-                    }
-                }
-
-                if (ticketInsertIdx == -1 && (sv.find("App Ownership Ticket") != std::string_view::npos ||
-                                              lower.find("setappticket") != std::string::npos ||
-                                              lower.find("seteticket") != std::string::npos)) {
-                    ticketInsertIdx = static_cast<int>(i);
-                }
             }
 
             // Enforce full coverage: insert any missing installed depot manifests
@@ -720,24 +658,8 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
             }
 
             if (!missingManifestLines.empty()) {
-                size_t insertPos = lines.size();
-                if (lastManifestLineIdx >= 0) {
-                    insertPos = static_cast<size_t>(lastManifestLineIdx + 1);
-                } else if (ticketInsertIdx >= 0) {
-                    insertPos = static_cast<size_t>(ticketInsertIdx);
-                }
+                size_t insertPos = lastManifestLineIdx >= 0 ? static_cast<size_t>(lastManifestLineIdx + 1) : lines.size();
                 lines.insert(lines.begin() + insertPos, missingManifestLines.begin(), missingManifestLines.end());
-            }
-
-            if (!hasAppTicketLine) {
-                lines.push_back("");
-                lines.push_back("-- App Ownership Ticket (AppTicket)");
-                lines.push_back("-- setAppTicket(" + std::to_string(appId) + ", \"" + appTicketHex + "\")");
-            }
-            if (!hasETicketLine) {
-                lines.push_back("");
-                lines.push_back("-- Encrypted App Ticket (ETicket)");
-                lines.push_back("-- setETicket(" + std::to_string(appId) + ", \"" + eTicketHex + "\")");
             }
 
             if (!AtomicWriteLines(luaFilePath, lines)) {
@@ -757,158 +679,14 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     }
 
     // Write SteamID.txt for offline ticket impersonation (NEVER WRITE .bin FILES!)
-    const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketBytes);
-    uint64_t targetSteamId = ticketSteamId;
-    if (targetSteamId == 0) {
-        if (auto activeId = GetCurrentActiveSteamId()) {
-            targetSteamId = *activeId;
-        }
-    }
-
-    if (targetSteamId != 0) {
-        if (AppTicket::WriteSteamID(appId, targetSteamId)) {
-            LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={}", appId, targetSteamId);
+    if (auto activeId = GetCurrentActiveSteamId(); activeId && *activeId != 0) {
+        if (AppTicket::WriteSteamID(appId, *activeId)) {
+            LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={}", appId, *activeId);
         }
     }
 
     LOG_INFO("DenuvoSync: SyncOrGenerate completed successfully for appId={}", appId);
     return true;
-}
-
-void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
-    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
-    if (LuaConfig::IsNoDenuvo(appId)) return;
-    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
-
-    // 1. Store in memory in SteamCredentialStore
-    std::vector<uint8_t> ticketVec(data, data + size);
-    AppTicket::WriteEncryptedTicket(appId, ticketVec);
-
-    // 2. Format ticket bytes as hex
-    std::string hex = ToHex(data, size);
-
-    // 3. Locate and update <AppId>.lua
-    std::filesystem::path luaBaseDir;
-    if (LuaDir[0] != '\0') {
-        luaBaseDir = OSTPlatform::Encoding::PathFromUtf8(LuaDir);
-    } else if (SteamInstallPath[0] != '\0') {
-        luaBaseDir = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "config" / "lua";
-    }
-    if (luaBaseDir.empty()) return;
-
-    const auto luaFilePath = luaBaseDir / std::to_string(appId) / (std::to_string(appId) + ".lua");
-    bool wrote = false;
-    {
-        std::error_code ec;
-        std::lock_guard fileLock(g_syncFileMutex);
-        if (!std::filesystem::exists(luaFilePath, ec) || ec) return;
-
-        std::ifstream in(luaFilePath);
-        if (!in.is_open()) return;
-
-        std::vector<std::string> lines;
-        std::string line;
-        while (std::getline(in, line)) {
-            lines.push_back(line);
-        }
-        in.close();
-
-        bool updated = false;
-        for (auto& l : lines) {
-            std::string_view sv = TrimWhitespace(l);
-            std::string lower(sv);
-            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (lower.find("seteticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
-                l = "-- setETicket(" + std::to_string(appId) + ", \"" + hex + "\")";
-                updated = true;
-                break;
-            }
-        }
-
-        if (!updated) {
-            lines.push_back("");
-            lines.push_back("-- Encrypted App Ticket (ETicket)");
-            lines.push_back("-- setETicket(" + std::to_string(appId) + ", \"" + hex + "\")");
-        }
-
-        wrote = AtomicWriteLines(luaFilePath, lines);
-    }
-
-    if (wrote) {
-        LOG_INFO("DenuvoSync: successfully refreshed ETicket hex in {} (size={})", luaFilePath.string(), size);
-        LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
-    }
-}
-
-void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
-    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
-    if (LuaConfig::IsNoDenuvo(appId)) return;
-    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
-
-    // 1. Store in memory in SteamCredentialStore
-    std::vector<uint8_t> ticketVec(data, data + size);
-    AppTicket::WriteAppOwnershipTicket(appId, ticketVec);
-
-    // 2. Persist SteamID.txt if ticket contains valid steamId
-    const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketVec);
-    if (ticketSteamId != 0) {
-        AppTicket::WriteSteamID(appId, ticketSteamId);
-    }
-
-    // 3. Format ticket bytes as hex
-    std::string hex = ToHex(data, size);
-
-    // 4. Locate and update <AppId>.lua
-    std::filesystem::path luaBaseDir;
-    if (LuaDir[0] != '\0') {
-        luaBaseDir = OSTPlatform::Encoding::PathFromUtf8(LuaDir);
-    } else if (SteamInstallPath[0] != '\0') {
-        luaBaseDir = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "config" / "lua";
-    }
-    if (luaBaseDir.empty()) return;
-
-    const auto luaFilePath = luaBaseDir / std::to_string(appId) / (std::to_string(appId) + ".lua");
-    bool wrote = false;
-    {
-        std::error_code ec;
-        std::lock_guard fileLock(g_syncFileMutex);
-        if (!std::filesystem::exists(luaFilePath, ec) || ec) return;
-
-        std::ifstream in(luaFilePath);
-        if (!in.is_open()) return;
-
-        std::vector<std::string> lines;
-        std::string line;
-        while (std::getline(in, line)) {
-            lines.push_back(line);
-        }
-        in.close();
-
-        bool updated = false;
-        for (auto& l : lines) {
-            std::string_view sv = TrimWhitespace(l);
-            std::string lower(sv);
-            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (lower.find("setappticket") != std::string::npos && lower.find(std::to_string(appId)) != std::string::npos) {
-                l = "-- setAppTicket(" + std::to_string(appId) + ", \"" + hex + "\")";
-                updated = true;
-                break;
-            }
-        }
-
-        if (!updated) {
-            lines.push_back("");
-            lines.push_back("-- App Ownership Ticket (AppTicket)");
-            lines.push_back("-- setAppTicket(" + std::to_string(appId) + ", \"" + hex + "\")");
-        }
-
-        wrote = AtomicWriteLines(luaFilePath, lines);
-    }
-
-    if (wrote) {
-        LOG_INFO("DenuvoSync: successfully refreshed AppTicket hex in {} (size={})", luaFilePath.string(), size);
-        LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
-    }
 }
 
 } // namespace PipeManager::DenuvoAuth

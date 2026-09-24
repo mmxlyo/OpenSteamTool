@@ -25,20 +25,11 @@ namespace PipeManager::DenuvoAuth {
     // Clears the -d+ launch flag for the given app.
     void ClearDPlusLaunch(AppId_t appId);
 
-    // Core synchronization / package generation function.
+    // Core synchronization / package generation function (-d+ / genuine ownership).
     // Guaranteed:
     // 1. Never writes .bin files to disk! (credentials/ only has SteamID.txt)
     // 2. Locks all installed manifests in <AppId>.lua (inserts/uncomments/updates setManifestid).
-    // 3. Comments out -- setAppTicket and -- setETicket in <AppId>.lua.
-    // 4. Overwrites SteamID.txt when the active account owns the game.
+    // 3. Persists SteamID.txt for the active account to support offline Denuvo identity.
     bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus);
-
-    // Called when a live EncryptedAppTicket is captured from Steam Client for an owned game.
-    // Refreshes the in-memory ETicket and updates the -- setETicket hex in <AppId>.lua.
-    void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
-
-    // Called when a live AppOwnershipTicket is captured from Steam Client (eMsg 858 or IPC) for an owned game.
-    // Stores the ticket in memory, updates SteamID.txt, and updates -- setAppTicket hex in <AppId>.lua.
-    void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
 
 } // namespace PipeManager::DenuvoAuth
