@@ -3,12 +3,13 @@
 #include "include/Log.h"
 
 #include <windows.h>
+#include <atomic>
 
 namespace OSTPlatform::Trap {
 namespace {
 
-Handler g_handler = nullptr;
-HandlerHandle g_handle = nullptr;
+std::atomic<Handler> g_handler{nullptr};
+std::atomic<HandlerHandle> g_handle{nullptr};
 
 const char* ToString(ExceptionKind kind) {
     switch (kind) {
@@ -28,7 +29,8 @@ ExceptionKind FromWindowsExceptionCode(DWORD code) {
 }
 
 LONG CALLBACK VehThunk(PEXCEPTION_POINTERS exceptionInfo) {
-    if (!g_handler) {
+    Handler handler = g_handler.load(std::memory_order_acquire);
+    if (!handler) {
         OSTP_LOG_TRACE("VehThunk: no handler installed");
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -46,7 +48,7 @@ LONG CALLBACK VehThunk(PEXCEPTION_POINTERS exceptionInfo) {
     OSTP_LOG_TRACE("VehThunk: exception code=0x{:08X} kind={} ip={:#x}",
                    code, ToString(kind), context.InstructionPointer());
 
-    const bool handled = g_handler(
+    const bool handled = handler(
         kind,
         context);
     OSTP_LOG_TRACE("VehThunk: {} at ip={:#x}", handled ? "handled" : "continued", context.InstructionPointer());
@@ -127,24 +129,25 @@ HandlerHandle AddVectoredHandler(Handler handler) {
         OSTP_LOG_DEBUG("AddVectoredHandler: handler is null");
         return nullptr;
     }
-    if (g_handle) {
+    if (g_handle.load(std::memory_order_relaxed)) {
         OSTP_LOG_DEBUG("AddVectoredHandler: handler already installed");
         return nullptr;
     }
 
-    g_handler = handler;
-    g_handle = AddVectoredExceptionHandler(1, VehThunk);
-    if (!g_handle) {
+    g_handler.store(handler, std::memory_order_release);
+    HandlerHandle handle = AddVectoredExceptionHandler(1, VehThunk);
+    if (!handle) {
         OSTP_LOG_WARN("AddVectoredExceptionHandler failed (error={})", GetLastError());
-        g_handler = nullptr;
+        g_handler.store(nullptr, std::memory_order_release);
     } else {
-        OSTP_LOG_DEBUG("AddVectoredExceptionHandler installed handle={}", g_handle);
+        g_handle.store(handle, std::memory_order_release);
+        OSTP_LOG_DEBUG("AddVectoredExceptionHandler installed handle={}", handle);
     }
-    return g_handle;
+    return handle;
 }
 
 void RemoveVectoredHandler(HandlerHandle handle) {
-    if (!handle || handle != g_handle) {
+    if (!handle || handle != g_handle.load(std::memory_order_relaxed)) {
         OSTP_LOG_TRACE("RemoveVectoredHandler: ignoring stale handle {}", handle);
         return;
     }
@@ -153,8 +156,8 @@ void RemoveVectoredHandler(HandlerHandle handle) {
         OSTP_LOG_WARN("RemoveVectoredExceptionHandler failed (error={})", GetLastError());
         return;
     }
-    g_handle = nullptr;
-    g_handler = nullptr;
+    g_handle.store(nullptr, std::memory_order_release);
+    g_handler.store(nullptr, std::memory_order_release);
     OSTP_LOG_DEBUG("RemoveVectoredExceptionHandler removed handle={}", handle);
 }
 

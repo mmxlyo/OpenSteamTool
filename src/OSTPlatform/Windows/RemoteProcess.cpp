@@ -74,9 +74,15 @@ std::vector<RemoteModule> EnumerateRemoteModules(uint32_t pid, Architecture arch
         ? TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32
         : TH32CS_SNAPMODULE;
 
-    Windows::UniqueFileHandle snapshot(CreateToolhelp32Snapshot(flags, pid));
-    if (!snapshot && architecture == Architecture::X86) {
-        snapshot = Windows::UniqueFileHandle(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE32, pid));
+    Windows::UniqueFileHandle snapshot;
+    for (int retry = 0; retry < 5; ++retry) {
+        snapshot.Reset(CreateToolhelp32Snapshot(flags, pid));
+        if (!snapshot && architecture == Architecture::X86) {
+            snapshot.Reset(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE32, pid));
+        }
+        if (snapshot) break;
+        if (GetLastError() != ERROR_BAD_LENGTH) break;
+        Sleep(10);
     }
     if (!snapshot) {
         OSTP_LOG_WARN("CreateToolhelp32Snapshot(pid={}, flags=0x{:X}) failed (error={})",
@@ -257,8 +263,11 @@ InjectStatus InjectLibrary(uint32_t pid, const std::filesystem::path& libraryPat
             OSTP_LOG_WARN("WaitForSingleObject(remote thread) failed (error={})", GetLastError());
         } else if (wait == WAIT_TIMEOUT) {
             OSTP_LOG_WARN("WaitForSingleObject(remote thread) timed out after {} ms", kRemoteLoadTimeoutMs);
+            // Remote thread may still be executing LoadLibraryW. Do NOT free remotePath under a living thread.
+            freeRemotePath.Dismiss();
         } else {
             OSTP_LOG_WARN("WaitForSingleObject(remote thread) returned unexpected status {}", wait);
+            freeRemotePath.Dismiss();
         }
         return InjectStatus::WaitFailed;
     }

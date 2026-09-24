@@ -67,7 +67,8 @@ Result Execute(const wchar_t* method,
                uint32_t timeoutResolve,
                uint32_t timeoutConnect,
                uint32_t timeoutSend,
-               uint32_t timeoutRecv) {
+               uint32_t timeoutRecv,
+               size_t maxResponseBytes) {
     Result r;
 
     ParsedUrl pu = ParseUrl(url);
@@ -160,7 +161,11 @@ Result Execute(const wchar_t* method,
                 break;
             }
             r.body.resize(off + read);
-            if (r.body.size() > 256 * 1024) break;
+            if (r.body.size() > maxResponseBytes) {
+                OSTP_LOG_WARN("{} - response body exceeded cap of {} bytes, truncating",
+                              url ? url : "", maxResponseBytes);
+                break;
+            }
         }
 
         if (r.status < 200 || r.status >= 300) {

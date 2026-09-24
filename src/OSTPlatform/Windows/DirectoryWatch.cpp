@@ -146,19 +146,28 @@ std::vector<Change> Watch::Drain() {
     if (bytesReturned == 0) {
         return changes;
     }
-    const FILE_NOTIFY_INFORMATION* info =
-        reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(impl_->buffer.data());
+    const char* bufStart = impl_->buffer.data();
+    const char* bufEnd = bufStart + bytesReturned;
+    const char* current = bufStart;
 
-    while (info) {
-        std::wstring_view fileName(info->FileName, info->FileNameLength / sizeof(wchar_t));
+    while (current + sizeof(FILE_NOTIFY_INFORMATION) <= bufEnd) {
+        const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(current);
+        const char* nameStart = reinterpret_cast<const char*>(info->FileName);
+        const size_t nameBytes = info->FileNameLength;
+        if (nameStart + nameBytes > bufEnd) {
+            break;
+        }
+
+        std::wstring_view fileName(info->FileName, nameBytes / sizeof(wchar_t));
         std::string relativePath = Encoding::WideToUtf8(fileName);
         if (!relativePath.empty()) {
             changes.push_back({std::move(relativePath), FromWindowsAction(info->Action)});
         }
 
         if (info->NextEntryOffset == 0) break;
-        info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(
-            reinterpret_cast<const char*>(info) + info->NextEntryOffset);
+        const char* nextPtr = current + info->NextEntryOffset;
+        if (nextPtr <= current || nextPtr >= bufEnd) break;
+        current = nextPtr;
     }
 
     return changes;
