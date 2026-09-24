@@ -211,6 +211,7 @@ namespace Hooks_Package {
                 toAdd.reserve(additions.size());
                 for (AppId_t id : additions) {
                     Hooks_SteamUI::CancelRemoval(id);
+                    Hooks_SteamUI::QueueAddition(id);
                     if (!addedIds.insert(id).second) {
                         continue;
                     }

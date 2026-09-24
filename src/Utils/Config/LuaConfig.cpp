@@ -1463,7 +1463,17 @@ namespace LuaConfig{
                     }
                     chunk.clear();
                 } else if (rc == LUA_ERRSYNTAX) {
-                    lua_pop(g_lua_state, 1);
+                    const char* err = lua_tostring(g_lua_state, -1);
+                    if (err && strstr(err, "<eof>") != nullptr) {
+                        // Incomplete multi-line statement: keep accumulating
+                        lua_pop(g_lua_state, 1);
+                    } else {
+                        // Genuine syntax error on this statement: log and discard bad chunk
+                        // so following valid statements in the file are not dropped.
+                        LOG_WARN("{}:{}: {}", filenameUtf8, lineNo, err ? err : "syntax error");
+                        lua_pop(g_lua_state, 1);
+                        chunk.clear();
+                    }
                 } else {
                     const char* err = lua_tostring(g_lua_state, -1);
                     LOG_WARN("{}:{}: {}", filenameUtf8, lineNo, err ? err : "unknown");

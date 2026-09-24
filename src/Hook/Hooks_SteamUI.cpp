@@ -206,6 +206,11 @@ namespace
     {
         if (pApp && LuaConfig::HasDepot(pApp->nAppID, false))
         {
+            if (pApp->OwnershipFlags == k_EAppOwnershipFlags_None)
+            {
+                pApp->OwnershipFlags = static_cast<EAppOwnershipFlags>(
+                    k_EAppOwnershipFlags_OwnsLicense | k_EAppOwnershipFlags_LicensePermanent);
+            }
             uint32_t t = LuaConfig::GetPurchaseTime(pApp->nAppID);
             if (t)
             {
@@ -217,9 +222,10 @@ namespace
         return oFillInAppOverview(pThis, pAppOverview, pApp);
     }
 
-    // Apps to drop from the library: queued off-thread, marked on the UI thread.
+    // Apps to drop from or restore to the library UI
     std::mutex g_removalMutex;
     std::vector<AppId_t> g_pendingRemovals;
+    std::vector<AppId_t> g_pendingAdditions;
     std::unordered_set<AppId_t> g_removedAppIds;
 
     // A full rebuild never lists removed_appid for apps still in the map
@@ -252,20 +258,67 @@ namespace
 
         if (CAPTURE_READY(GetAppByID) && CAPTURE_READY(MarkAppChange))
         {
-            std::vector<AppId_t> draining;
+            std::vector<AppId_t> drainingRemovals;
+            std::vector<AppId_t> drainingAdditions;
             {
                 std::lock_guard<std::mutex> lock(g_removalMutex);
                 if (!g_pendingRemovals.empty()) {
-                    draining.swap(g_pendingRemovals);
+                    drainingRemovals.swap(g_pendingRemovals);
+                }
+                if (!g_pendingAdditions.empty()) {
+                    drainingAdditions.swap(g_pendingAdditions);
                 }
             }
 
-            if (!draining.empty())
+            if (!drainingAdditions.empty())
+            {
+                std::vector<AppId_t> parentsToNotify;
+
+                for (AppId_t appId : drainingAdditions)
+                {
+                    if (CSteamApp *pApp = oGetAppByID(g_pController, appId, false))
+                    {
+                        pApp->OwnershipFlags = static_cast<EAppOwnershipFlags>(
+                            k_EAppOwnershipFlags_OwnsLicense | k_EAppOwnershipFlags_LicensePermanent);
+
+                        uint32_t t = LuaConfig::GetPurchaseTime(appId);
+                        if (t)
+                        {
+                            pApp->PurchasedTime = t;
+                        }
+
+                        const bool isDlc = ((pApp->eProtoAppType & 32) != 0) ||
+                                           (pApp->ParentAppID != 0 && pApp->ParentAppID != k_uAppIdInvalid);
+
+                        if (isDlc)
+                        {
+                            if (pApp->ParentAppID != 0 && pApp->ParentAppID != k_uAppIdInvalid && pApp->ParentAppID != appId)
+                            {
+                                if (std::ranges::find(parentsToNotify, pApp->ParentAppID) == parentsToNotify.end())
+                                {
+                                    parentsToNotify.push_back(pApp->ParentAppID);
+                                }
+                            }
+                        }
+                    }
+
+                    LOG_STEAMUI_INFO("RunFrame: restoring added appId {}", appId);
+                    oMarkAppChange(g_pAppChangeSource, appId, EAppChangeFlags::AppInfoOrConfig);
+                }
+
+                for (AppId_t parentId : parentsToNotify)
+                {
+                    LOG_STEAMUI_INFO("RunFrame: notifying parent appId {} of DLC addition", parentId);
+                    oMarkAppChange(g_pAppChangeSource, parentId, EAppChangeFlags::AppInfoOrConfig);
+                }
+            }
+
+            if (!drainingRemovals.empty())
             {
                 std::vector<AppId_t> newlyRemoved;
                 std::vector<AppId_t> parentsToNotify;
 
-                for (AppId_t appId : draining)
+                for (AppId_t appId : drainingRemovals)
                 {
                     if (LuaConfig::IsOwned(appId) || LuaConfig::HasDepot(appId, false))
                     {
@@ -362,6 +415,7 @@ namespace Hooks_SteamUI
     void QueueRemoval(AppId_t appId)
     {
         std::lock_guard<std::mutex> lock(g_removalMutex);
+        std::erase(g_pendingAdditions, appId);
         if (std::ranges::find(g_pendingRemovals, appId) == g_pendingRemovals.end()) {
             g_pendingRemovals.push_back(appId);
         }
@@ -372,5 +426,15 @@ namespace Hooks_SteamUI
         std::lock_guard<std::mutex> lock(g_removalMutex);
         std::erase(g_pendingRemovals, appId);
         g_removedAppIds.erase(appId);
+    }
+
+    void QueueAddition(AppId_t appId)
+    {
+        std::lock_guard<std::mutex> lock(g_removalMutex);
+        std::erase(g_pendingRemovals, appId);
+        g_removedAppIds.erase(appId);
+        if (std::ranges::find(g_pendingAdditions, appId) == g_pendingAdditions.end()) {
+            g_pendingAdditions.push_back(appId);
+        }
     }
 }
