@@ -36,8 +36,6 @@ namespace {
     uint32 g_cbNewHdr    = 0;
     bool   g_NeedReplaceBody = false;
     bool   g_NeedReplaceHdr  = false;
-    bool   g_ResizedInPlace = false;
-    uint32 g_NewBodySize    = 0;
     uint8  g_RecvPacketPool[kPacketPoolSize][kMaxPacketSize];
     int    g_RecvPacketPoolIdx = 0;
 
@@ -323,12 +321,12 @@ namespace Hooks_NetPacket_UserStats {
         LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: original body:\n{}", resp.DebugString());
 
         resp.clear_stats();
-        g_NewBodySize = static_cast<uint32>(resp.ByteSizeLong());
-        if (!resp.SerializeToArray(const_cast<uint8*>(pBody), cbBody)){
+        g_cbNewBody = static_cast<uint32>(resp.ByteSizeLong());
+        if (g_cbNewBody > kMaxBodySize || !resp.SerializeToArray(g_NewBody, kMaxBodySize)) {
             LOG_ACHIEVEMENT_WARN("Player::GetUserStats response: failed to SerializeToArray modified response");
             return;
         }
-        g_ResizedInPlace = true;
+        g_NeedReplaceBody = true;
         LOG_ACHIEVEMENT_DEBUG("Player::GetUserStats response: modified body:\n{}", resp.DebugString());
     }
 
@@ -1140,7 +1138,7 @@ namespace Hooks_NetPacket_Cloud {
             case 2: {
                 uint64 len;
                 if (!ReadVarint(d, size, pos, len)) return false;
-                if (pos + len > size) return false;
+                if (len > size - pos) return false;
                 pos += static_cast<uint32>(len);
                 break;
             }
@@ -1487,17 +1485,9 @@ namespace {
         uint32 cbBody, cbHdr;
         if (UnpackRaw(pPacket->m_pubData, pPacket->m_cubData,
                      eMsg, pHdr, cbHdr, pBody, cbBody)) {
-            g_ResizedInPlace = false;
             RecvJob(eMsg, pBody, cbBody, pHdr, cbHdr);
 
-            if (g_ResizedInPlace && g_NeedReplaceHdr) {
-                // Body shrunk in-place + header changed -> full replace via pool
-                ReplaceRecvPacket(pPacket,
-                    g_NewHdr, g_cbNewHdr,
-                    pBody, g_NewBodySize);
-            } else if (g_ResizedInPlace) {
-                pPacket->m_cubData = sizeof(MsgHdr) + cbHdr + g_NewBodySize;
-            } else if (g_NeedReplaceHdr || g_NeedReplaceBody) {
+            if (g_NeedReplaceHdr || g_NeedReplaceBody) {
                 ReplaceRecvPacket(pPacket,
                     g_NeedReplaceHdr  ? g_NewHdr  : pHdr,
                     g_NeedReplaceHdr  ? g_cbNewHdr : cbHdr,

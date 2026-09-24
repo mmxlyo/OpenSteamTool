@@ -40,7 +40,7 @@ namespace {
                         auto [ptr, ec] = std::from_chars(idStr.data(), idStr.data() + idStr.size(), depotId);
                         if (ec == std::errc{} && ptr == idStr.data() + idStr.size() && depotId != 0) {
                             if (const auto& key = LuaConfig::GetDecryptionKey(depotId); !key.empty()) {
-                                if (KeySize >= key.size()) {
+                                if (Key && KeySize >= key.size()) {
                                     LOG_DECRYPTIONKEY_INFO("Providing decryption key for depot {}: {}", depotId,
                                                            spdlog::to_hex(key.data(), key.data() + key.size()));
                                     std::memcpy(Key, key.data(), key.size());

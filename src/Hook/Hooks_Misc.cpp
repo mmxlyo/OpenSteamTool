@@ -4,6 +4,7 @@
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include "dllmain.h"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
@@ -268,8 +269,10 @@ namespace Hooks_Misc {
             // Returns strlen+1 on success, -1 on failure.
             int64 len = oGetAppDataFromAppInfo(g_pCAppInfoCache, appId, "common/name",
                 reinterpret_cast<uint8*>(buf), sizeof(buf));
-            if (len > 1)
-                name.assign(buf, static_cast<size_t>(len - 1));
+            if (len > 1) {
+                const size_t copyLen = (std::min)(static_cast<size_t>(len - 1), sizeof(buf) - 1);
+                name.assign(buf, copyLen);
+            }
         }
 
         LOG_MISC_DEBUG("GetGameNameByAppID({}): {}", appId, name);
