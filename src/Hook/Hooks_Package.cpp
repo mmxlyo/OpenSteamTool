@@ -128,7 +128,9 @@ namespace {
         const bool isTrulyOwned = pOwn && result &&
                                   (pOwn->PackageId != kInjectedPackageId) &&
                                   (pOwn->PackageId != 0) &&
-                                  (pOwn->ExistInPackageNums > 1) &&
+                                  (pOwn->ExistInPackageNums >= 1) &&
+                                  pOwn->bOwnsLicense &&
+                                  !pOwn->bLicenseExpired &&
                                   !pOwn->bFamilyShared &&
                                   !pOwn->bBorrowed;
         if (isTrulyOwned) {

@@ -160,6 +160,10 @@ namespace AppTicket {
         return ExtractSteamIdFromTicketBytes(ticket.data(), ticket.size());
     }
 
+    uint64_t ExtractSteamIdFromTicketBytes(std::span<const uint8_t> ticket) {
+        return ExtractSteamIdFromTicketBytes(ticket.data(), ticket.size());
+    }
+
     uint64_t GetTicketSteamID(AppId_t appId) {
         uint64_t steamId = 0;
         if (OSTPlatform::SteamCredentialStore::GetTicketSteamId(appId, steamId) == OSTPlatform::SteamCredentialStore::Status::Ok) {

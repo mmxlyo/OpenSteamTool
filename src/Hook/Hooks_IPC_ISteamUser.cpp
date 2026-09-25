@@ -9,6 +9,7 @@
 #include "Hooks_Misc.h"
 #include "Utils/Config/LuaConfig.h"
 
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -68,6 +69,27 @@ namespace {
         // leave it untouched and pass through cleanly.
         GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
         if (origResp.ok() && origResp.returnValue() > 0) {
+            LuaConfig::MarkOwned(appId);
+
+            if (LuaConfig::HasDepot(appId, false)) {
+                uint64_t steamId = 0;
+                auto ticketSpan = origResp.pTicket();
+                if (!ticketSpan.empty()) {
+                    const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
+                    steamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketSpan.data(), ticketSize);
+                }
+                if (steamId == 0) {
+                    if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
+                        steamId = *active;
+                    }
+                }
+                if (steamId != 0) {
+                    AppTicket::WriteSteamID(appId, steamId);
+                    LOG_IPC_INFO("GetAppOwnershipTicketExtendedData: genuine ticket for appId={} -> persisted SteamID.txt: {}", appId, steamId);
+                }
+            }
+
+            PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
             return;
         }
 
@@ -193,6 +215,13 @@ namespace {
         if (existingResp.ok() && existingResp.returnValue()) {
             auto ticketSpan = existingResp.pTicket();
             if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
+                LuaConfig::MarkOwned(appId);
+                if (LuaConfig::HasDepot(appId, false)) {
+                    if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
+                        AppTicket::WriteSteamID(appId, *active);
+                        LOG_IPC_INFO("GetEncryptedAppTicket: genuine ticket for appId={}, persisted SteamID.txt: {}", appId, *active);
+                    }
+                }
                 return;
             }
         }

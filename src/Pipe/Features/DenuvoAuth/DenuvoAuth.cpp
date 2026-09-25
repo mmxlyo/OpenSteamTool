@@ -85,23 +85,23 @@ namespace {
         }
 
         void OnHandshake(const PipeContext& ctx, const PipeKey& pipeKey) {
-            if (!denuvo) return;
-
             if (ctx.appId != k_uAppIdInvalid) {
                 authorizedAppId = ctx.appId;
             }
             pid = ctx.process.pid;
 
-            // Startup grace period: arms 2500ms upon initial connection so Denuvo has ample
-            // time to verify local offline tokens or launch handshake without leaking real SteamID (avoiding 88500012).
-            if (!startupArmed) {
-                startupArmed = true;
-                const auto now = std::chrono::steady_clock::now();
-                const auto startupDeadline = now + kStartupGraceDuration;
-                if (startupDeadline > authDeadline) {
-                    authDeadline = startupDeadline;
+            if (denuvo) {
+                // Startup grace period: arms 2500ms upon initial connection so Denuvo has ample
+                // time to verify local offline tokens or launch handshake without leaking real SteamID (avoiding 88500012).
+                if (!startupArmed) {
+                    startupArmed = true;
+                    const auto now = std::chrono::steady_clock::now();
+                    const auto startupDeadline = now + kStartupGraceDuration;
+                    if (startupDeadline > authDeadline) {
+                        authDeadline = startupDeadline;
+                    }
+                    LOG_PIPE_INFO("DenuvoAuth: startup grace window armed for pid={} (+2500ms) {}", pid, this->DebugString());
                 }
-                LOG_PIPE_INFO("DenuvoAuth: startup grace window armed for pid={} (+2500ms) {}", pid, this->DebugString());
             }
 
             TryPersistSteamId();
@@ -123,7 +123,9 @@ namespace {
         }
 
         void TryPersistSteamId() {
-            if (steamIdPersisted || !denuvo || authorizedAppId == k_uAppIdInvalid || authorizedAppId == 0) return;
+            if (steamIdPersisted || authorizedAppId == k_uAppIdInvalid || authorizedAppId == 0) return;
+            const bool hasLua = LuaConfig::HasDepot(authorizedAppId, false);
+            if (!denuvo && !hasLua) return;
             if (!LuaConfig::IsOwned(authorizedAppId)) return;
 
             const std::optional<uint64> steamId = GetCurrentActiveSteamId();

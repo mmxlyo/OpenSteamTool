@@ -458,6 +458,15 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
         ClearDPlusLaunch(appId);
     }
 
+    // Persist SteamID.txt on launch if running on an authorized account with Lua configured
+    if (hasLua && LuaConfig::IsOwned(appId)) {
+        if (auto activeId = GetCurrentActiveSteamId(); activeId && *activeId != 0) {
+            if (AppTicket::WriteSteamID(appId, *activeId)) {
+                LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={} on spawn", appId, *activeId);
+            }
+        }
+    }
+
     // Only genuine owners, -d+, or -forcedenuvo execute sync or package generation
     if (LuaConfig::IsOwned(appId) || hasDPlus || hasForcedDenuvo) {
         std::string_view exeSv = pExePath ? pExePath : "";

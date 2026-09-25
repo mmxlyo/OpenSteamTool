@@ -4,6 +4,7 @@
 #include "OSTPlatform/include/SteamCredentialStore.h"
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace AppTicket {
@@ -49,6 +50,7 @@ namespace AppTicket {
     // without duplicating the layout knowledge.
     uint64_t ExtractSteamIdFromTicketBytes(const uint8_t* data, size_t size);
     uint64_t ExtractSteamIdFromTicketBytes(const std::vector<uint8_t>& ticket);
+    uint64_t ExtractSteamIdFromTicketBytes(std::span<const uint8_t> ticket);
 
     // Write AppTicket binary data to Steam's local credential store.
     bool WriteAppOwnershipTicket(AppId_t appId, const std::vector<uint8_t>& data);
