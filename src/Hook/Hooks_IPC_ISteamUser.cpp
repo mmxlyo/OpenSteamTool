@@ -5,6 +5,7 @@
 #include "Utils/Tickets/EticketClient.h"
 #include "Pipe/PipeManager.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Logging/Log.h"
 #include "Hooks_Misc.h"
 #include "Utils/Config/LuaConfig.h"
@@ -28,7 +29,7 @@ namespace {
     void HandlerPost_IClientUser_GetSteamID(CPipeClient* pipe,CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
         AppId_t appId = Hooks_Misc::ResolveAppId();
-        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
+        if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
 
@@ -66,27 +67,17 @@ namespace {
         if (appId == 0) return;
 
         // If Steam's genuine implementation already returned a valid ticket (account owns the game),
-        // leave it untouched and pass through cleanly.
+        // capture it dynamically to refresh credentials and leave it untouched to pass through cleanly.
         GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
         if (origResp.ok() && origResp.returnValue() > 0) {
             LuaConfig::MarkOwned(appId);
 
-            if (LuaConfig::HasDepot(appId, false)) {
-                uint64_t steamId = 0;
-                auto ticketSpan = origResp.pTicket();
-                if (!ticketSpan.empty()) {
-                    const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
-                    steamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketSpan.first(ticketSize));
-                }
-                if (steamId == 0) {
-                    if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
-                        steamId = *active;
-                    }
-                }
-                if (steamId != 0) {
-                    AppTicket::WriteSteamID(appId, steamId);
-                    LOG_IPC_DEBUG("GetAppOwnershipTicketExtendedData: genuine ticket for appId={} -> persisted SteamID.txt: {}", appId, steamId);
-                }
+            auto ticketSpan = origResp.pTicket();
+            const size_t ticketLen = (std::min)(static_cast<size_t>(origResp.returnValue()), ticketSpan.size());
+            if (ticketLen > 0) {
+                PipeManager::DenuvoAuth::OnOwnershipTicketCaptured(appId, ticketSpan.data(), ticketLen);
+            } else if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
+                AppTicket::WriteSteamID(appId, *active);
             }
 
             PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
@@ -214,12 +205,16 @@ namespace {
         GetEncryptedAppTicketResp existingResp{pWrite};
         if (existingResp.ok() && existingResp.returnValue()) {
             auto ticketSpan = existingResp.pTicket();
-            if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
+            if (!ticketSpan.empty()) {
                 LuaConfig::MarkOwned(appId);
+                PipeManager::DenuvoAuth::OnEncryptedTicketCaptured(appId, ticketSpan.data(), ticketSpan.size());
                 if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
                     AppTicket::WriteSteamID(appId, *active);
                     LOG_IPC_DEBUG("GetEncryptedAppTicket: genuine ticket for appId={}, persisted SteamID.txt: {}", appId, *active);
                 }
+                return;
+            } else if (existingResp.pcbTicket() > 0) {
+                // Buffer size inquiry (game passed nullptr or 0-length buffer)
                 return;
             }
         }

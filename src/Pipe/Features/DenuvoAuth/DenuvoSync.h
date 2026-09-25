@@ -32,4 +32,12 @@ namespace PipeManager::DenuvoAuth {
     // 3. Persists SteamID.txt for the active account to support offline Denuvo identity.
     bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus);
 
+    // Called when a live EncryptedAppTicket is captured from Steam Client for an owned game.
+    // Refreshes the in-memory ETicket in SteamCredentialStore.
+    void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
+
+    // Called when a live AppOwnershipTicket is captured from Steam Client (eMsg 858 or IPC) for an owned game.
+    // Stores the ticket in memory in SteamCredentialStore and updates SteamID.txt.
+    void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
+
 } // namespace PipeManager::DenuvoAuth

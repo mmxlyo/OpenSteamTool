@@ -688,8 +688,8 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     }
 
     // Write SteamID.txt for offline ticket impersonation (NEVER WRITE .bin FILES!)
-    // Guard with LuaConfig::IsOwned so unauthorized secondary accounts playing via -forcedenuvo do not overwrite genuine SteamID
-    if (LuaConfig::IsOwned(appId)) {
+    // Guard with isDPlus || LuaConfig::IsOwned so unauthorized secondary accounts playing via -forcedenuvo do not overwrite genuine SteamID
+    if (isDPlus || LuaConfig::IsOwned(appId)) {
         if (auto activeId = GetCurrentActiveSteamId(); activeId && *activeId != 0) {
             if (AppTicket::WriteSteamID(appId, *activeId)) {
                 LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={}", appId, *activeId);
@@ -699,6 +699,41 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
 
     LOG_INFO("DenuvoSync: SyncOrGenerate completed successfully for appId={}", appId);
     return true;
+}
+
+void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
+    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
+    if (LuaConfig::IsNoDenuvo(appId)) return;
+    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
+
+    // Store in memory in SteamCredentialStore
+    std::vector<uint8_t> ticketVec(data, data + size);
+    AppTicket::WriteEncryptedTicket(appId, ticketVec);
+    LOG_INFO("DenuvoSync: stored genuine ETicket in memory for appId={} (size={})", appId, size);
+}
+
+void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
+    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
+    if (LuaConfig::IsNoDenuvo(appId)) return;
+    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
+
+    // 1. Store in memory in SteamCredentialStore
+    std::vector<uint8_t> ticketVec(data, data + size);
+    AppTicket::WriteAppOwnershipTicket(appId, ticketVec);
+    LOG_INFO("DenuvoSync: stored genuine AppTicket in memory for appId={} (size={})", appId, size);
+
+    // 2. Persist SteamID.txt if ticket contains valid steamId
+    const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketVec);
+    uint64_t targetSteamId = ticketSteamId;
+    if (targetSteamId == 0) {
+        if (auto activeId = GetCurrentActiveSteamId()) {
+            targetSteamId = *activeId;
+        }
+    }
+    if (targetSteamId != 0) {
+        AppTicket::WriteSteamID(appId, targetSteamId);
+        LOG_INFO("DenuvoSync: persisted SteamID.txt from captured ownership ticket for appId={} steamid={}", appId, targetSteamId);
+    }
 }
 
 } // namespace PipeManager::DenuvoAuth
