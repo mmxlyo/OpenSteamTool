@@ -4,6 +4,10 @@
 
 #include <shared_mutex>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace {
     std::shared_mutex g_sitesMutex;
     std::vector<VehCommon::Int3Site> g_sites;
@@ -86,13 +90,29 @@ void RemoveHandler() {
     }
 }
 
+#if defined(_WIN32)
+static void SafeRestoreSite(uint8_t* target, uint8_t originalByte) {
+    __try {
+        if (target && *target == 0xCC) {
+            RestoreByte(target, originalByte);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // Module might already be unmapped, safely ignore
+    }
+}
+#else
+static void SafeRestoreSite(uint8_t* target, uint8_t originalByte) {
+    if (target && *target == 0xCC) {
+        RestoreByte(target, originalByte);
+    }
+}
+#endif
+
 void DisarmAll() {
     RemoveHandler();
     std::unique_lock lock(g_sitesMutex);
     for (auto& site : g_sites) {
-        if (site.target && *site.target == 0xCC) {
-            RestoreByte(site.target, site.originalByte);
-        }
+        SafeRestoreSite(site.target, site.originalByte);
     }
     g_sites.clear();
 }

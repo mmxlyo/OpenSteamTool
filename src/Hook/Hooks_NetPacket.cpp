@@ -1471,6 +1471,10 @@ namespace {
 
     HOOK_FUNC(RecvPkt, void*, void* pThis, CNetPacket* pPacket)
     {
+        if (!pPacket || !pPacket->m_pubData) {
+            return oRecvPkt(pThis, pPacket);
+        }
+
         std::lock_guard lock(g_RecvMutex);
         Hooks_NetPacket_RichPresence::TryInject(
             pThis, pPacket,

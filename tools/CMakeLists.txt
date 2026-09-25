@@ -35,6 +35,9 @@ if(WIN32)
         Injector/ost-Injector.rc
     )
     target_compile_features(ost-Injector PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(ost-Injector PRIVATE /utf-8)
+    endif()
     set_target_properties(ost-Injector PROPERTIES
         OUTPUT_NAME "ost-Injector"
         WIN32_EXECUTABLE TRUE
