@@ -203,6 +203,13 @@ message CMsgClientGetUserStatsResponse {
 	repeated .CMsgClientGetUserStatsResponse.Achievement_Blocks achievement_blocks = 6;
 }
 
+message CMsgClientStoreUserStatsResponse {
+	optional fixed64 game_id = 1;
+	optional int32 eresult = 2 [default = 2];
+	optional uint32 crc_stats = 3;
+	optional bytes stats_failed_validation = 4;
+}
+
 message CContentServerDirectory_GetManifestRequestCode_Request {
 	optional uint32 app_id = 1;
 	optional uint32 depot_id = 2;
