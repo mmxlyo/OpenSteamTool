@@ -38,6 +38,7 @@ namespace {
 
     std::mutex        g_mutex;
     std::atomic<bool> g_active{false};
+    std::atomic<uint32_t> g_cachedAccountId{0};
     OSTPlatform::DynamicLibrary::ModuleHandle g_module = nullptr;
 
     CR_InitCloudSave_t     g_initCloudSave     = nullptr;
@@ -102,9 +103,12 @@ namespace {
 
     std::vector<AppId_t> CollectRedirectedAppIds() {
         std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
+        std::erase_if(depots, [](AppId_t id) {
+            return LuaConfig::IsOwned(id);
+        });
         if (Hooks_Misc::IsOnlineFixActive()) {
             const AppId_t fixAppId = Hooks_Misc::ResolveAppId();
-            if (fixAppId != 0 && std::find(depots.begin(), depots.end(), fixAppId) == depots.end()) {
+            if (fixAppId != 0 && !LuaConfig::IsOwned(fixAppId) && std::find(depots.begin(), depots.end(), fixAppId) == depots.end()) {
                 depots.push_back(fixAppId);
             }
         }
@@ -187,6 +191,20 @@ void Initialize(const char* steamInstallPath) {
     LOG_INFO("CloudRedirect: loaded {} and initialised cloud save redirection (diversion: {:p})",
              libPathUtf8, static_cast<void*>(client_hModule));
 
+    if (g_setAccountId) {
+        const uint32_t cachedAccId = g_cachedAccountId.load(std::memory_order_acquire);
+        if (cachedAccId != 0) {
+            try {
+                g_setAccountId(cachedAccId);
+                LOG_INFO("CloudRedirect: applied cached account id {}", cachedAccId);
+            } catch (const std::exception& e) {
+                LOG_WARN("CloudRedirect: initial CR_SetAccountId threw: {}", e.what());
+            } catch (...) {
+                LOG_WARN("CloudRedirect: initial CR_SetAccountId threw unknown exception");
+            }
+        }
+    }
+
     if (g_enableStatsSync) {
         try {
             g_enableStatsSync(true, true);
@@ -245,6 +263,7 @@ bool IsActive() {
 }
 
 bool IsApp(uint32_t appId) {
+    if (LuaConfig::IsOwned(appId)) return false;
     if (!g_active.load(std::memory_order_acquire)) return false;
     try {
         if (g_isApp && g_isApp(appId)) return true;
@@ -260,6 +279,7 @@ bool IsApp(uint32_t appId) {
 }
 
 void AddApp(uint32_t appId) {
+    if (LuaConfig::IsOwned(appId)) return;
     if (!g_active.load(std::memory_order_acquire) || !g_addApp) return;
     try {
         g_addApp(appId);
@@ -272,8 +292,8 @@ void AddApp(uint32_t appId) {
 }
 
 bool HandleCloudRpc(const char* method, uint32_t appId, uint32_t accountId,
-                    const uint8_t* reqBody, uint32_t reqLen,
-                    uint8_t* respBuf, uint32_t respMaxLen,
+                    const uint8* reqBody, uint32_t reqLen,
+                    uint8* respBuf, uint32_t respMaxLen,
                     uint32_t* respLen, int32_t* eresult) {
     if (!g_active.load(std::memory_order_acquire) || !g_handleCloudRpc) return false;
     try {
@@ -289,9 +309,13 @@ bool HandleCloudRpc(const char* method, uint32_t appId, uint32_t accountId,
 }
 
 void SetAccountId(uint32_t accountId) {
+    if (accountId == 0) return;
+    const uint32_t prev = g_cachedAccountId.exchange(accountId, std::memory_order_acq_rel);
     if (!g_active.load(std::memory_order_acquire) || !g_setAccountId) return;
+    if (prev == accountId) return;
     try {
         g_setAccountId(accountId);
+        LOG_INFO("CloudRedirect: set account id {}", accountId);
     } catch (const std::exception& e) {
         LOG_ERROR("CloudRedirect: CR_SetAccountId({}) failed: {}", accountId, e.what());
     } catch (...) {
@@ -312,6 +336,7 @@ void NotifyAppRunning(uint32_t appId, bool running) {
 }
 
 void NotifyStatsStored(uint32_t appId) {
+    if (LuaConfig::IsOwned(appId)) return;
     if (!g_active.load(std::memory_order_acquire) || !g_notifyStatsStored) return;
     try {
         g_notifyStatsStored(appId);
@@ -323,6 +348,7 @@ void NotifyStatsStored(uint32_t appId) {
 }
 
 uint32_t GetAchievements(uint32_t appId, AchievementBlock* out, uint32_t maxBlocks) {
+    if (LuaConfig::IsOwned(appId)) return 0;
     if (!g_active.load(std::memory_order_acquire) || !g_getAchievements) return 0;
     try {
         return g_getAchievements(appId, out, maxBlocks);
@@ -338,6 +364,7 @@ uint32_t GetAchievements(uint32_t appId, AchievementBlock* out, uint32_t maxBloc
 void Shutdown() {
     std::lock_guard lock(g_mutex);
     if (!g_active.exchange(false)) return;
+    g_cachedAccountId.store(0, std::memory_order_release);
     if (g_shutdownFn) {
         try {
             g_shutdownFn();
