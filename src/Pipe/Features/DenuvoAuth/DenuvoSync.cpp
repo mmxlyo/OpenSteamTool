@@ -688,9 +688,12 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     }
 
     // Write SteamID.txt for offline ticket impersonation (NEVER WRITE .bin FILES!)
-    if (auto activeId = GetCurrentActiveSteamId(); activeId && *activeId != 0) {
-        if (AppTicket::WriteSteamID(appId, *activeId)) {
-            LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={}", appId, *activeId);
+    // Guard with LuaConfig::IsOwned so unauthorized secondary accounts playing via -forcedenuvo do not overwrite genuine SteamID
+    if (LuaConfig::IsOwned(appId)) {
+        if (auto activeId = GetCurrentActiveSteamId(); activeId && *activeId != 0) {
+            if (AppTicket::WriteSteamID(appId, *activeId)) {
+                LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={}", appId, *activeId);
+            }
         }
     }
 

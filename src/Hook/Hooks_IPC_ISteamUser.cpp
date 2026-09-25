@@ -76,7 +76,7 @@ namespace {
                 auto ticketSpan = origResp.pTicket();
                 if (!ticketSpan.empty()) {
                     const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
-                    steamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketSpan.data(), ticketSize);
+                    steamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketSpan.first(ticketSize));
                 }
                 if (steamId == 0) {
                     if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
@@ -85,7 +85,7 @@ namespace {
                 }
                 if (steamId != 0) {
                     AppTicket::WriteSteamID(appId, steamId);
-                    LOG_IPC_INFO("GetAppOwnershipTicketExtendedData: genuine ticket for appId={} -> persisted SteamID.txt: {}", appId, steamId);
+                    LOG_IPC_DEBUG("GetAppOwnershipTicketExtendedData: genuine ticket for appId={} -> persisted SteamID.txt: {}", appId, steamId);
                 }
             }
 
@@ -216,11 +216,9 @@ namespace {
             auto ticketSpan = existingResp.pTicket();
             if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
                 LuaConfig::MarkOwned(appId);
-                if (LuaConfig::HasDepot(appId, false)) {
-                    if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
-                        AppTicket::WriteSteamID(appId, *active);
-                        LOG_IPC_INFO("GetEncryptedAppTicket: genuine ticket for appId={}, persisted SteamID.txt: {}", appId, *active);
-                    }
+                if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
+                    AppTicket::WriteSteamID(appId, *active);
+                    LOG_IPC_DEBUG("GetEncryptedAppTicket: genuine ticket for appId={}, persisted SteamID.txt: {}", appId, *active);
                 }
                 return;
             }
