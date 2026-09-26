@@ -3,7 +3,7 @@
 #include "OSTPlatform/include/Process.h"
 #include "OSTPlatform/include/Numbers.h"
 #include "Utils/Logging/Log.h"
-#include "Utils/Support/Stopwatch.h"
+#include "OSTPlatform/include/Stopwatch.h"
 
 #include <algorithm>
 #include <cctype>
@@ -69,7 +69,7 @@ ProcessEnvironment ReadSteamEnvironment(PID_t pid) {
 }
 
 ProcessSnapshot InspectProcess(PID_t pid) {
-    const Utils::Stopwatch timer;
+    const OSTPlatform::Stopwatch timer;
     ProcessSnapshot snapshot{};
     snapshot.pid = pid;
     snapshot.creationTime = GetProcessCreationTime(pid).value_or(0);

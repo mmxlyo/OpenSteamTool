@@ -419,6 +419,58 @@ namespace {
         }
     }
 
+    std::string ToHex(const uint8_t* data, size_t size) {
+        std::string hex;
+        hex.reserve(size * 2);
+        static constexpr char kDigits[] = "0123456789abcdef";
+        for (size_t i = 0; i < size; ++i) {
+            hex.push_back(kDigits[(data[i] >> 4) & 0x0F]);
+            hex.push_back(kDigits[data[i] & 0x0F]);
+        }
+        return hex;
+    }
+
+    std::filesystem::path ResolveAppLuaPath(AppId_t appId) {
+        // 1. Check if LuaConfig already tracked the source Lua file for this app
+        std::string tracked = LuaConfig::FindLuaFileForAppId(appId);
+        if (!tracked.empty()) {
+            std::error_code ec;
+            auto p = OSTPlatform::Encoding::PathFromUtf8(tracked);
+            if (std::filesystem::exists(p, ec) && !ec) {
+                return p;
+            }
+        }
+
+        // 2. Search configured Lua directory: <LuaDir>/<appId>/<appId>.lua and <LuaDir>/<appId>.lua
+        std::filesystem::path luaBaseDir;
+        if (LuaDir[0] != '\0') {
+            luaBaseDir = OSTPlatform::Encoding::PathFromUtf8(LuaDir);
+        } else if (SteamInstallPath[0] != '\0') {
+            luaBaseDir = std::filesystem::path(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath)) / "config" / "lua";
+        }
+
+        if (!luaBaseDir.empty()) {
+            auto p1 = luaBaseDir / std::to_string(appId) / (std::to_string(appId) + ".lua");
+            std::error_code ec;
+            if (std::filesystem::exists(p1, ec) && !ec) return p1;
+
+            auto p2 = luaBaseDir / (std::to_string(appId) + ".lua");
+            if (std::filesystem::exists(p2, ec) && !ec) return p2;
+        }
+
+        // 3. Fallback to <storageBase>/config/st/<appId>.lua
+        const auto storageBase = OSTPlatform::Encoding::PathFromUtf8(GetStorageDirectory());
+        auto stPath = storageBase / "config" / "st" / (std::to_string(appId) + ".lua");
+        std::error_code ec;
+        if (std::filesystem::exists(stPath, ec) && !ec) return stPath;
+
+        // Default target for new creation if baseDir is known: <LuaDir>/<appId>/<appId>.lua
+        if (!luaBaseDir.empty()) {
+            return luaBaseDir / std::to_string(appId) / (std::to_string(appId) + ".lua");
+        }
+        return {};
+    }
+
 } // namespace
 
 void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
@@ -456,15 +508,6 @@ void OnSpawnProcess(AppId_t appId, const char* pExePath, const char* cmdLine) {
         LOG_INFO("DenuvoSync: recorded -d+ launch option for appId={}", appId);
     } else {
         ClearDPlusLaunch(appId);
-    }
-
-    // Persist SteamID.txt on launch if running on an authorized account with Lua configured
-    if (hasLua && LuaConfig::IsOwned(appId)) {
-        if (auto activeId = GetCurrentActiveSteamId(); activeId && *activeId != 0) {
-            if (AppTicket::WriteSteamID(appId, *activeId)) {
-                LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={} on spawn", appId, *activeId);
-            }
-        }
     }
 
     // Only genuine owners, -d+, or -forcedenuvo execute sync or package generation
@@ -559,6 +602,7 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
 
     std::error_code ec;
     const bool shouldLockManifest = Config::GetDenuvoLockManifest();
+    bool ticketAlreadyWritten = false;
     {
         std::lock_guard fileLock(g_syncFileMutex);
         const bool luaFileExists = std::filesystem::exists(luaFilePath, ec) && !ec;
@@ -594,6 +638,17 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                         lines.push_back("-- setManifestid(" + std::to_string(depotId) + ", \"" + gid + "\")");
                     }
                 }
+            }
+
+            std::vector<uint8_t> cachedTicket = AppTicket::GetSteamConfigStoreTicket(appId);
+            if (cachedTicket.empty()) {
+                cachedTicket = AppTicket::GetCachedAppOwnershipTicket(appId);
+            }
+            if (!cachedTicket.empty()) {
+                lines.push_back("");
+                lines.push_back("-- App Ownership Ticket (AppTicket)");
+                lines.push_back("setAppTicket(" + std::to_string(appId) + ", \"" + ToHex(cachedTicket.data(), cachedTicket.size()) + "\")");
+                ticketAlreadyWritten = true;
             }
 
             if (!AtomicWriteLines(luaFilePath, lines)) {
@@ -687,13 +742,14 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
         LuaConfig::SyncManifests(OSTPlatform::Encoding::PathToUtf8(appLuaDir));
     }
 
-    // Write SteamID.txt for offline ticket impersonation (NEVER WRITE .bin FILES!)
-    // Guard with isDPlus || LuaConfig::IsOwned so unauthorized secondary accounts playing via -forcedenuvo do not overwrite genuine SteamID
-    if (isDPlus || LuaConfig::IsOwned(appId)) {
-        if (auto activeId = GetCurrentActiveSteamId(); activeId && *activeId != 0) {
-            if (AppTicket::WriteSteamID(appId, *activeId)) {
-                LOG_INFO("DenuvoSync: persisted SteamID.txt for appId={} steamid={}", appId, *activeId);
-            }
+    // If an AppTicket is already cached, ensure it is synchronized into Lua (skip if freshly written during generation)
+    if (!ticketAlreadyWritten) {
+        std::vector<uint8_t> cachedTicket = AppTicket::GetSteamConfigStoreTicket(appId);
+        if (cachedTicket.empty()) {
+            cachedTicket = AppTicket::GetCachedAppOwnershipTicket(appId);
+        }
+        if (!cachedTicket.empty()) {
+            SyncAppTicketToLua(appId, cachedTicket.data(), cachedTicket.size());
         }
     }
 
@@ -701,39 +757,143 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
     return true;
 }
 
-void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
-    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
-    if (LuaConfig::IsNoDenuvo(appId)) return;
-    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
+bool SyncAppTicketToLua(AppId_t appId, const uint8_t* pTicketData, size_t ticketSize) {
+    if (appId == 0 || !pTicketData || ticketSize < AppTicket::kSteamIdTicketMinimumSize) {
+        return false;
+    }
 
-    // Store in memory in SteamCredentialStore
-    std::vector<uint8_t> ticketVec(data, data + size);
-    AppTicket::WriteEncryptedTicket(appId, ticketVec);
-    LOG_INFO("DenuvoSync: stored genuine ETicket in memory for appId={} (size={})", appId, size);
-}
+    const uint64_t steamId = AppTicket::ExtractSteamIdFromTicketBytes(pTicketData, ticketSize);
+    if (steamId == 0) {
+        LOG_WARN("DenuvoSync: cannot extract SteamID from ticket for appId={}", appId);
+        return false;
+    }
 
-void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size) {
-    if (appId == 0 || appId == k_uAppIdInvalid || !data || size == 0) return;
-    if (LuaConfig::IsNoDenuvo(appId)) return;
-    if (!LuaConfig::HasDepot(appId, false) && !IsDPlusLaunch(appId) && !LuaConfig::IsForcedDenuvo(appId)) return;
+    const std::string newHex = ToHex(pTicketData, ticketSize);
+    const auto luaPath = ResolveAppLuaPath(appId);
+    if (luaPath.empty()) {
+        LOG_WARN("DenuvoSync: unable to resolve Lua file path for appId={}", appId);
+        return false;
+    }
 
-    // 1. Store in memory in SteamCredentialStore
-    std::vector<uint8_t> ticketVec(data, data + size);
-    AppTicket::WriteAppOwnershipTicket(appId, ticketVec);
-    LOG_INFO("DenuvoSync: stored genuine AppTicket in memory for appId={} (size={})", appId, size);
+    std::error_code ec;
+    bool luaExists = std::filesystem::exists(luaPath, ec) && !ec;
 
-    // 2. Persist SteamID.txt if ticket contains valid steamId
-    const uint64_t ticketSteamId = AppTicket::ExtractSteamIdFromTicketBytes(ticketVec);
-    uint64_t targetSteamId = ticketSteamId;
-    if (targetSteamId == 0) {
-        if (auto activeId = GetCurrentActiveSteamId()) {
-            targetSteamId = *activeId;
+    // If Lua does not exist yet, check if this app was launched with -d+
+    if (!luaExists) {
+        if (IsDPlusLaunch(appId)) {
+            LOG_INFO("DenuvoSync: -d+ active and Lua missing for appId={}, generating via SyncOrGenerate", appId);
+            SyncOrGenerate(appId, "", true);
+            luaExists = std::filesystem::exists(luaPath, ec) && !ec;
         }
     }
-    if (targetSteamId != 0) {
-        AppTicket::WriteSteamID(appId, targetSteamId);
-        LOG_INFO("DenuvoSync: persisted SteamID.txt from captured ownership ticket for appId={} steamid={}", appId, targetSteamId);
+
+    if (!luaExists) {
+        LOG_DEBUG("DenuvoSync: no Lua configuration exists for appId={} — skipping ticket sync to disk", appId);
+        // Keep in memory so this session has it
+        AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(pTicketData, pTicketData + ticketSize));
+        return false;
     }
+
+    std::lock_guard fileLock(g_syncFileMutex);
+    std::ifstream in(luaPath);
+    if (!in.is_open()) {
+        LOG_ERROR("DenuvoSync: failed to open Lua file {} for ticket update", luaPath.string());
+        return false;
+    }
+
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        lines.push_back(line);
+    }
+    in.close();
+
+    bool found = false;
+    bool modified = false;
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string_view sv = TrimWhitespace(lines[i]);
+        if (sv.empty()) continue;
+
+        std::string lower(sv);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        size_t pos = lower.find("setappticket");
+        if (pos == std::string::npos) continue;
+
+        size_t openParen = lower.find('(', pos);
+        if (openParen == std::string::npos) continue;
+
+        std::string_view prefix = TrimWhitespace(sv.substr(0, pos));
+        bool isComment = false;
+        if (!prefix.empty()) {
+            if (prefix.starts_with("--")) {
+                isComment = true;
+            } else {
+                continue;
+            }
+        }
+
+        size_t comma = lower.find(',', openParen);
+        if (comma == std::string::npos || comma <= openParen) continue;
+
+        std::string_view arg1 = TrimWhitespace(sv.substr(openParen + 1, comma - openParen - 1));
+        uint32_t parsedAppId = 0;
+        auto [p, ec2] = std::from_chars(arg1.data(), arg1.data() + arg1.size(), parsedAppId);
+        if (ec2 != std::errc{} || parsedAppId != appId) {
+            continue;
+        }
+
+        found = true;
+
+        size_t firstQuote = sv.find('"', comma);
+        size_t secondQuote = (firstQuote != std::string::npos) ? sv.find('"', firstQuote + 1) : std::string::npos;
+        std::string_view existingHex;
+        if (firstQuote != std::string::npos && secondQuote != std::string::npos && secondQuote > firstQuote) {
+            existingHex = sv.substr(firstQuote + 1, secondQuote - firstQuote - 1);
+        }
+
+        if (isComment || existingHex != newHex) {
+            lines[i] = std::format("setAppTicket({}, \"{}\")", appId, newHex);
+            modified = true;
+            LOG_INFO("DenuvoSync: {} setAppTicket for appId={} in {}",
+                     isComment ? "uncommented & updated" : "updated", appId, luaPath.string());
+
+            if (i > 0) {
+                std::string prevLower = lines[i - 1];
+                std::transform(prevLower.begin(), prevLower.end(), prevLower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (prevLower.find("commented out because eticket") != std::string::npos) {
+                    lines.erase(lines.begin() + (i - 1));
+                    --i;
+                }
+            }
+        } else {
+            LOG_DEBUG("DenuvoSync: setAppTicket for appId={} is already active and up-to-date", appId);
+        }
+        break;
+    }
+
+    if (!found) {
+        lines.push_back("");
+        lines.push_back("-- App Ownership Ticket (AppTicket)");
+        lines.push_back(std::format("setAppTicket({}, \"{}\")", appId, newHex));
+        modified = true;
+        LOG_INFO("DenuvoSync: appended setAppTicket for appId={} in {}", appId, luaPath.string());
+    }
+
+    if (modified) {
+        if (!AtomicWriteLines(luaPath, lines)) {
+            LOG_ERROR("DenuvoSync: failed to write updated Lua file {}", luaPath.string());
+            return false;
+        }
+    }
+
+    // Always store ticket in memory and reload Lua config
+    AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(pTicketData, pTicketData + ticketSize));
+    LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaPath));
+    return true;
 }
 
 } // namespace PipeManager::DenuvoAuth

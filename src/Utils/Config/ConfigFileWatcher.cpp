@@ -1,4 +1,3 @@
-#include "Hook/Hooks_Package.h"
 #include "Utils/Config/Config.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Config/LuaFileWatcher.h"
@@ -18,6 +17,7 @@
 namespace ConfigFileWatcher {
 namespace {
 
+std::atomic<LicenseChangedCallback> g_licenseChangedCb{nullptr};
 std::atomic<bool> g_running{false};
 std::thread g_watcherThread;
 std::string g_configPath;
@@ -68,7 +68,9 @@ void RestartLuaWatcher() {
     LuaConfig::ReloadDirectories(watchDirs);
     LuaFileWatcher::Start(watchDirs);
 
-    Hooks_Package::NotifyLicenseChanged();
+    if (auto cb = g_licenseChangedCb.load(std::memory_order_relaxed)) {
+        cb();
+    }
     LOG_INFO("Lua directories refreshed after config reload: {}", static_cast<uint32_t>(watchDirs.size()));
 }
 
@@ -149,6 +151,10 @@ void WatcherThread() {
 }
 
 } // namespace
+
+void SetLicenseChangedCallback(LicenseChangedCallback cb) {
+    g_licenseChangedCb.store(cb, std::memory_order_release);
+}
 
 void Start(const std::string& configPath, const std::string& defaultLuaDir) {
     if (g_running.exchange(true)) {

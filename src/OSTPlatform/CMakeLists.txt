@@ -29,7 +29,6 @@ add_library(OSTPlatform STATIC
     Windows/PE.cpp
     Windows/Process.cpp
     Windows/RemoteProcess.cpp
-    Windows/SteamCredentialStore.cpp
     Windows/Thread.cpp
     Windows/Trap.cpp
 )

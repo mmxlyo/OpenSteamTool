@@ -944,8 +944,7 @@ namespace LuaConfig{
     // - On file reload/re-parse (ParseFile) or unload: when ticket refcount reaches 0,
     //   in-memory tickets are cleared immediately (commenting out a ticket removes it naturally).
     // - On explicit file deletion (LuaFileWatcher delete event): `isPermanentRemoval` is true,
-    //   triggering physical deletion of the credentials directory (including SteamID.txt)
-    //   once all referencing lua files and depots drop to 0.
+    //   clearing all cached in-memory credentials once all referencing lua files and depots drop to 0.
     static void UnloadFileLocked(const std::string& rawFilePath, bool isPermanentRemoval) {
         std::string filePath = OSTPlatform::Encoding::PathToUtf8(
             OSTPlatform::Encoding::PathFromUtf8(rawFilePath).lexically_normal());
@@ -981,7 +980,7 @@ namespace LuaConfig{
                     g_purchaseTime.erase(id);
                     g_pendingRemovals.push_back(id);
                     if (isPermanentRemoval && !g_appTicketRefCount.contains(id) && !g_eTicketRefCount.contains(id)) {
-                        AppTicket::RemoveCredentials(id);
+                        AppTicket::ClearCachedTickets(id);
                     }
                 }
             }
@@ -998,7 +997,7 @@ namespace LuaConfig{
                         g_appTicketRefCount.erase(refIt);
                         AppTicket::RemoveAppOwnershipTicket(id);
                         if (isPermanentRemoval && !g_depotRefCount.contains(id) && !g_eTicketRefCount.contains(id)) {
-                            AppTicket::RemoveCredentials(id);
+                            AppTicket::ClearCachedTickets(id);
                         }
                     }
                 }
@@ -1014,7 +1013,7 @@ namespace LuaConfig{
                         g_eTicketRefCount.erase(refIt);
                         AppTicket::RemoveEncryptedTicket(id);
                         if (isPermanentRemoval && !g_depotRefCount.contains(id) && !g_appTicketRefCount.contains(id)) {
-                            AppTicket::RemoveCredentials(id);
+                            AppTicket::ClearCachedTickets(id);
                         }
                     }
                 }
@@ -1628,6 +1627,21 @@ namespace LuaConfig{
             std::unique_lock lock(g_configSharedMutex);
             g_pendingAdditions.clear();
         }
+    }
+
+    std::string FindLuaFileForAppId(AppId_t appId) {
+        std::shared_lock lock(g_configSharedMutex);
+        for (const auto& [filePath, depots] : g_fileDepots) {
+            if (std::find(depots.begin(), depots.end(), appId) != depots.end()) {
+                return filePath;
+            }
+        }
+        for (const auto& [filePath, tickets] : g_fileAppTickets) {
+            if (std::find(tickets.begin(), tickets.end(), appId) != tickets.end()) {
+                return filePath;
+            }
+        }
+        return {};
     }
 
 }

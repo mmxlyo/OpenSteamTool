@@ -5,7 +5,7 @@
 #include "OSTPlatform/include/PE.h"
 #include "OSTPlatform/include/Process.h"
 #include "Utils/Logging/Log.h"
-#include "Utils/Support/Stopwatch.h"
+#include "OSTPlatform/include/Stopwatch.h"
 
 #include <algorithm>
 #include <array>
@@ -231,7 +231,7 @@ namespace {
         // so the BMH pass runs concurrently with the next chunk's read, instead of
         // materializing the whole (~100s of MB) section in memory first. Returns the
         // absolute file offset of the match.
-        const Utils::Stopwatch scanTimer;
+        const OSTPlatform::Stopwatch scanTimer;
         const auto matchRaw = OSTPlatform::ByteSearch::FindInFileRange(
             module.nativePath,
             section->rawOffset,
@@ -338,7 +338,7 @@ namespace {
     }
 
     std::vector<ModuleCandidate> EnumerateModules(PID_t pid) {
-        const Utils::Stopwatch timer;
+        const OSTPlatform::Stopwatch timer;
         std::vector<ModuleCandidate> modules;
 
         size_t order = 0;
@@ -441,7 +441,7 @@ namespace {
         ProtectionScanReport report{};
         if (pid == 0) return report;
 
-        const Utils::Stopwatch totalTimer;
+        const OSTPlatform::Stopwatch totalTimer;
         std::vector<ModuleCandidate> modules = EnumerateModules(pid);
         LOG_PIPE_DEBUG("DenuvoAuth: pid={} scanning {} candidate module(s)", pid, modules.size());
 

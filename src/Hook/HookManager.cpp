@@ -8,20 +8,17 @@
 #include "Hooks_SteamUI.h"
 #include "Utils/HookSupport/VehCommon.h"
 
+namespace HookManager {
 
-namespace SteamUI {
-
-    void CoreHook()   { 
-        Hooks_SteamUI::Install(); 
+    void InstallUIHooks() {
+        Hooks_SteamUI::Install();
     }
-    void CoreUnhook() { 
-        Hooks_SteamUI::Uninstall(); 
+
+    void UninstallUIHooks() {
+        Hooks_SteamUI::Uninstall();
     }
-}
 
-namespace SteamClient {
-
-    void CoreHook() {
+    void InstallClientHooks() {
         Hooks_Decryption::Install();
         Hooks_IPC::Install();
         Hooks_Manifest::Install();
@@ -30,7 +27,7 @@ namespace SteamClient {
         Hooks_Package::Install();
     }
 
-    void CoreUnhook() {
+    void UninstallClientHooks() {
         Hooks_Decryption::Uninstall();
         Hooks_IPC::Uninstall();
         Hooks_Manifest::Uninstall();

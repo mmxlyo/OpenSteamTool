@@ -1,17 +1,9 @@
-#ifndef HOOKMANAGER_H
-#define HOOKMANAGER_H
+#pragma once
 
-#include "dllmain.h"
+namespace HookManager {
+    void InstallUIHooks();
+    void UninstallUIHooks();
 
-namespace SteamUI {
-    void CoreHook();
-    void CoreUnhook();
+    void InstallClientHooks();
+    void UninstallClientHooks();
 }
-
-namespace SteamClient {
-    void CoreHook();
-    void CoreUnhook();
-}
-
-
-#endif // HOOKMANAGER_H
