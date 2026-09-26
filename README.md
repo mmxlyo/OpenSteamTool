@@ -183,6 +183,20 @@ lock_manifest = true
 | `when_appids` | Optional. Restrict to specific AppIDs |
 | `all_games` | Optional. `false` (default) only injects Lua games; `true` injects all games |
 
+### Manifest via Lua
+If defined in `config/lua/`, these functions take priority over configured remote HTTP APIs:
+
+- `fetch_manifest_code_ex(app_id, depot_id, gid)` *(Recommended)*: Extended variant receiving `app_id`, `depot_id`, and `gid` for app-aware API endpoints
+- `fetch_manifest_code(gid)`: Base variant receiving manifest GID only
+
+Built-in HTTP helper functions provided by the C++ runtime:
+| Function | Signature | Return Value |
+| :--- | :--- | :--- |
+| `http_get` | `http_get(url [, headers])` | `body, status_code` |
+| `http_post` | `http_post(url, body [, headers])` | `body, status_code` |
+
+`headers` is an optional table: `{["Key"]="Value", ...}`
+
 ---
 
 ## Debug logging

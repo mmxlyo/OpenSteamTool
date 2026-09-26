@@ -183,6 +183,20 @@ lock_manifest = true
 | `when_appids` | 可选。限定目标 AppID 列表 |
 | `all_games` | 可选。`false`（默认）仅对 Lua 解锁游戏生效；`true` 对所有游戏生效 |
 
+### 通过 Lua 获取 Manifest
+若在 `config/lua/` 中定义了以下函数，将优先于配置中的远程 API 调用：
+
+- `fetch_manifest_code_ex(app_id, depot_id, gid)` *（推荐）*：扩展函数，接收 `app_id`、`depot_id` 和 `gid`，允许构造需要应用识别的 API 端点
+- `fetch_manifest_code(gid)`：基础函数，只接收 manifest GID
+
+C++ 运行时提供两个辅助网络函数：
+| 函数 | 签名 | 返回值 |
+| :--- | :--- | :--- |
+| `http_get` | `http_get(url [, headers])` | `body, status_code` |
+| `http_post` | `http_post(url, body [, headers])` | `body, status_code` |
+
+`headers` 为可选表：`{["Key"]="Value", ...}`
+
 ---
 
 ## 调试日志

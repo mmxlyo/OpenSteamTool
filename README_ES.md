@@ -183,6 +183,20 @@ lock_manifest = true
 | `when_appids` | Opcional. Lista de AppIDs a los que restringir la inyección |
 | `all_games` | Opcional. `false` (predeterminado) solo inyecta en juegos Lua; `true` inyecta en todos los juegos |
 
+### Manifest mediante Lua
+Si se definen en `config/lua/`, estas funciones tienen prioridad sobre las API HTTP remotas configuradas:
+
+- `fetch_manifest_code_ex(app_id, depot_id, gid)` *(Recomendado)*: Variante extendida que recibe `app_id`, `depot_id` y `gid` para construir puntos finales con identificación de app
+- `fetch_manifest_code(gid)`: Variante base que solo recibe el GID del manifiesto
+
+Funciones auxiliares HTTP proporcionadas por el runtime de C++:
+| Función | Firma | Valor de retorno |
+| :--- | :--- | :--- |
+| `http_get` | `http_get(url [, headers])` | `body, status_code` |
+| `http_post` | `http_post(url, body [, headers])` | `body, status_code` |
+
+`headers` es una tabla opcional: `{["Key"]="Value", ...}`
+
 ---
 
 ## Registros de depuración (Logs)
