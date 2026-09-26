@@ -36,253 +36,210 @@
 
 ## 功能特性
 
-### 核心解锁
-- 解锁任意数量未拥有的游戏
-- 解锁未拥有游戏的所有 DLC
-- 支持从 Lua 配置自动加载仓库（depot）解密密钥
-- 支持通过 `manifestdex` / `opensteamtool` / `steamrun` / `wudrm` 上游 API 自动下载 manifest（默认为 `manifestdex`），或通过自定义 Lua 端点（参见 [通过 Lua 获取 Manifest](#通过-lua-获取-manifest)）
-- 支持下载需要访问令牌的保护游戏或 DLC
-- 支持绑定 manifest 以防止特定游戏被更新
+### 核心解锁与清单管理
+- 解锁任意数量未拥有的游戏及全部 DLC
+- 支持从 Lua 配置自动加载仓库（Depot）解密密钥与 PICS 访问令牌（`addtoken`）
+- 支持通过 `manifestdex`（默认）、`opensteamtool`、`steamrun`、`wudrm` API 或自定义 Lua 端点自动下载 Manifest
+- 支持固定 Manifest 版本以阻止游戏更新
+- `config/lua/` 支持多层级嵌套子目录，且其中的 `*.manifest` 文件会自动镜像同步至 `Steam/depotcache/`
 
 ### 热重载
-- 在任何监视目录中添加、修改、删除或覆盖 `.lua` 文件会自动触发重载。无需重启，无需切换离线/在线模式
+- 自动监视配置目录中的 `.lua` 文件，新增或修改即刻生效，无需重启 Steam
 
-### 注入
-- 通过 `opensteamtool.toml` 中的 `[inject]` 添加可选的游戏进程库注入
-- 配置 `enabled`、`library_x64` 和 `library_x86`；注入的库必须与目标进程架构匹配。路径可以是绝对路径，也可以是相对于 Steam 根目录的相对路径
+### 游戏进程注入
+- 通过 `opensteamtool.toml` 中的 `[[inject]]` 将第三方 DLL 注入到游戏进程
+- 支持配置多个 DLL、启动参数过滤及 AppID 限制（参见 [第三方 DLL 注入](#第三方-dll-注入)）
 
-### 家庭共享和远程同乐
-- 绕过 Steam 家庭共享限制，无需配置。
+### 家庭共享支持
+- 自动解锁家庭共享限制，互不影响，无需配置
 
-### 兼容 Denuvo 和 SteamStub 保护的游戏
-- 仅 SteamStub 保护的游戏不需要配置 `AppTicket`。OpenSteamTool 通过 Steam 本地 ConfigStore 令牌伪造 AppId，无需注入游戏进程
-- Denuvo 保护的游戏仍需凭据数据。切号授权凭据保存在 `<Steam或便携目录>/config/credentials/<AppId>/SteamID.txt`，不再写入 Windows 注册表
-- **显式设置票据**：在 Lua 配置中使用 `setAppTicket(appid, "hex")` 和 `setETicket(appid, "hex")`。票据直接在内存中管理，无需生成磁盘 bin 文件，注释或移除配置即可自动失效，彻底避免与切号授权冲突。`AppTicket` 本身已内嵌 SteamID，使用票据时**不需要**配置 `SteamID.txt`
-- **切号离线授权**：拥有游戏的账号在线启动通过验证后，系统会自动保存该账号的 `SteamID.txt`。切换到无游戏的账号即可
-- **SteamID 优先级与 Error 54**：优先读取内存中 `AppTicket` 内嵌的 SteamID；若未配置显式票据（如已在 Lua 中注释），自动回退读取 `SteamID.txt`。若 SteamID 与票据不匹配，Denuvo 将报错误代码 54 (`k_EResultDiskFull`)
-- Denuvo 令牌存在时效性或硬件绑定。若授权失败显示错误代码 `88500005`，请重新提取并刷新 Lua 配置中的票据数据
-- **清单锁定与官方更新控制 (`lock_manifest` / `-nodenuvo` / `noDenuvo`)**：切号授权或使用 `-d+` 同步时，OpenSteamTool 默认会在 `<AppId>.lua` 中写入活跃的 `setManifestid` 锁定已安装清单版本，防止 Steam 静默更新破坏 Denuvo 离线授权。若为您自己的正版账号且希望 Steam 正常检测与下载官方更新补丁，可在 `opensteamtool.toml` 中配置 `[denuvo] lock_manifest = false`（全局设置：以注释态 `-- setManifestid` 写入并跳过清单镜像）；或者针对特定游戏在 Steam 属性启动选项中添加 `-nodenuvo`（或在 Lua 中配置 `noDenuvo(appid)`），将彻底跳过该游戏的 Denuvo 检测与清单同步逻辑。
-- **强制 Denuvo 识别 (`-forcedenuvo` / `forcedenuvo`)**：若某些游戏由于加壳特殊导致自动特征扫描未能识别 Denuvo，可在 Steam 属性启动选项中加入 `-forcedenuvo` 或在 Lua 中配置 `forcedenuvo(appid)`，强制将其作为 Denuvo 保护游戏处理并执行授权同步逻辑。
+### 云存档重定向 (CloudRedirect)
+- 集成 [CloudRedirect](https://github.com/Selectively11/CloudRedirect)，支持 OST 托管的游戏使用 CloudRedirect 获得存档、游戏时长与成就数据云同步的能力（参见 [配置](#配置可选) 中的 `[cloud]`）
 
-### 使用 `extract_tickets` 提取授权与配置文件
+### Denuvo 和 SteamStub 兼容
+- **SteamStub**：无需配置票据，自动通过本地 ConfigStore 伪造 AppID
+- **显式票据**：在 Lua 中通过 `setAppTicket` / `setETicket` 注入，直接在内存中管理，无需生成磁盘 bin 文件
+- **切号离线授权**：正版账号运行后自动将凭据同步至 `<AppId>.lua`（自动写入 `setAppTicket`），切换无游戏账号即可离线游玩
+- **清单锁定与更新控制**：默认写入活跃的 `setManifestid` 锁定已安装版本；若需允许正版更新，可在配置中设 `lock_manifest = false`，或在启动项中加入 `-nodenuvo`（Lua 中配置 `nodenuvo(appid)`）
+- **辅助参数**：
+  - `-d+`：正版账号启动项参数，一键自动生成该游戏的 `<AppId>.lua` 并锁定清单版本
+  - `-forcedenuvo`：强制将游戏按 Denuvo 保护处理（Lua 中配置 `forcedenuvo(appid)`）
 
-`extract_tickets` 工具可在拥有目标游戏的机器上提取该游戏所需的授权文件（AppTicket / ETicket）、拥有的 DLC、访问令牌（AccessToken）及清单文件（`*.manifest`），并一键生成可直接使用的 `<appid>.lua` 配置文件。
+### 使用 `extract_tickets` 提取凭据与配置
+用于在拥有游戏的账号上提取 AppTicket、ETicket、DLC 列表、Depot 密钥、Manifest 并生成开箱即用的 `<appid>.lua`。
 
-* **下载地址**：可前往 [GitHub Actions Tools 页面](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml) 下载编译好的 `extract_tickets.exe`。
+* **获取方式**：[GitHub Actions Tools 页面](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml) 或本地 `build.bat` 编译（产物位于 `build/tools/<Config>/extract_tickets.exe`）
 * **使用方法**：
-  在 Steam 运行且登录拥有该游戏的账号后运行（传入目标 AppId 或根据提示输入）：
   ```powershell
+  # 标准提取（本地已安装游戏）
   extract_tickets.exe 1361510
+
+  # 未安装游戏强制提取 ETicket（若客户端按钮卡住，重启 Steam 即可恢复）
+  extract_tickets.exe 1361510 --force-eticket
   ```
-* **输出内容**（保存在 `<appid>/` 文件夹中）：
-  * `<appid>.lua` — 完整、开箱即用的配置文件（包含 AppId、拥有的 DLC、访问令牌 `addtoken`、Depot 密钥、固定清单 `setManifestid` 及授权配置），直接复制到 `config/lua/` 目录即可生效。
-  * `*.manifest` — 自动从本地缓存提取的 Depot 清单文件。
-  * `appticket.bin` / `eticket.bin` — 原始授权令牌文件。
 
 ### 统计和成就
-- 为未拥有的游戏启用统计和成就
-- 使用 `setStat(appid, "steamid")` 配置拉取哪个 SteamID 的成就数据
-- 如果某个应用未配置 `setStat`，当 `[stats] enable_api = true`（默认）时，OpenSteamTool 查询 `https://stats.opensteamtool.com/{appid}`
-- 优先级：`setStat` > stats API（启用且有效时）> 硬编码预设 SteamID `76561198028121353`
+- 为未拥有游戏启用成就与统计
+- 优先级：Lua `setStat(appid, "steamid")` > stats API（`https://stats.opensteamtool.com/{appid}`）> 默认 SteamID（`76561198028121353`）
 
-### 在线修复
-- 在 Steam 启动参数中添加 `-onlinefix` 启用基于 480 的在线联机（极少数需要匹配证书的游戏可使用 `-onlinefix -p2pflip`）。同一时间只能运行一个此类游戏。若要还原，直接移除启动参数即可。
+### 联机修复 (Online Fix)
+- 在 Steam 启动选项中添加 `-onlinefix` 启用基于 480 (Spacewar) 的在线联机，自动保护真实存档与 AppID（同一时间仅运行一个此类游戏）
+- 极少数需要匹配 480 证书的游戏可使用 `-onlinefix -p2pflip`（可能存在兼容性问题，非必要不建议使用）
 
-## 未来计划
-- Steam 云同步支持。（这是个超级大工程）
+---
 
 ## 使用方法
 
-### 方式一：便携模式（推荐，使用 ost-Injector）
-
-便携模式完全独立运行，**无需向 Steam 安装目录放置任何 DLL，也不改动 Steam 文件夹**：
-
-1. 解压构建好的发布包（包含 `ost-Injector.exe`、`OpenSteamTool.dll`、`CreateAutoInjectTask.bat`、`DeleteAutoInjectTask.bat`、`config.ini` 等）到任意独立便携目录（例如 `D:\OpenSteamTool_Portable`）。
-2. 在该目录下创建 `config/lua/` 文件夹，并放入游戏或 DLC 解锁脚本（如 `games.lua`）。
-3. 选择启动方式：
-   - **手动启动**：直接双击运行 `ost-Injector.exe`，注入器会自动检测或拉起 Steam，并在 Steam UI 就绪后自动完成注入。
-   - **开机自动静默注入**：右键以管理员身份运行 `CreateAutoInjectTask.bat`，即可创建开机登录计划任务。注入器将在后台以 `-watch` 模式常驻静默监听，一旦检测到 Steam 启动立即自动完成注入。若需移除自启任务，右键管理员运行 `DeleteAutoInjectTask.bat` 即可。
-   - **命令行模式**：`ost-Injector.exe` 支持 `-watch`（后台常驻监听）与 `-silent`（单次静默注入）。默认配置文件 `config.ini` 可自定义 Steam 可执行程序路径与目标 DLL 路径。
+### 方式一：便携模式（推荐）
+无需向 Steam 目录复制任何 DLL，完全独立运行：
+1. 解压发布包（含 `ost-Injector.exe`、`OpenSteamTool.dll` 等）到任意独立目录（如 `D:\OpenSteamTool_Portable`）
+2. 在该目录下创建 `config/lua/` 文件夹并放入 `.lua` 解锁脚本；若需自定义配置，可将 `opensteamtool.toml` 直接放在此目录下
+3. 启动方式：
+   - **手动启动**：直接运行 `ost-Injector.exe`，自动检测或拉起 Steam 并注入
+   - **开机自启**：右键以管理员身份运行 `CreateAutoInjectTask.bat`（卸载运行 `DeleteAutoInjectTask.bat`）
+   - **命令行**：支持 `-watch`（后台监听）与 `-silent`（单次静默注入）
 
 ### 方式二：标准模式（DLL 劫持）
+1. 将 `dwmapi.dll`、`xinput1_4.dll` 和 `OpenSteamTool.dll` 复制到 Steam 安装根目录
+2. 在 Steam 根目录下创建 `config/lua/` 目录并放入 Lua 脚本
 
-1. 在项目根目录运行 `build.bat` 构建项目，或下载预编译 Release 包。
-2. 将生成的 `dwmapi.dll`、`xinput1_4.dll` 和 `OpenSteamTool.dll` 复制到 Steam 根目录。
-3. 创建 Lua 目录（例如 `C:\Program Files (x86)\Steam\config\lua`）并将 Lua 脚本放在那里。DLL 会自动加载并执行它们。
+---
 
-### Lua 配置示例
+## Lua 配置示例
+
 ```lua
-addappid(1361510) -- 解锁 appid 为 1361510 的游戏
+addappid(1361510) -- 解锁游戏
+addappid(1361511, 0, "5954562e7f5260400040a818bc29b60b335bb690066ff767e20d145a3b6b4af0") -- 解锁 depot 并配置密钥
+addtoken(1361510, "2764735786934684318") -- 添加 PICS 访问令牌
 
-addappid(1361511, 0,"5954562e7f5260400040a818bc29b60b335bb690066ff767e20d145a3b6b4af0") -- 解锁 appid 为 1361511 的游戏，depotKey 为 "5954562e7f5260400040a818bc29b60b335bb690066ff767e20d145a3b6b4af0" 
+setManifestid(1361511, "5656605350306673283") -- 锁定 depot 清单版本
+setManifestid(1361511, "5656605350306673283", 12345678) -- 锁定清单并指定大小
 
-addtoken(1361510,"2764735786934684318") -- 为 appid 为 1361510 的游戏添加访问令牌 ("2764735786934684318") 
--- 不再支持：
---pinApp(1361510) -- 固定 appid 为 1361510 的游戏以防止其被更新
+setAppTicket(1361510, "0100000000000000...") -- 存入内存 AppTicket
+setETicket(1361510, "0100000000000000...")   -- 存入内存 ETicket
+setStat(1361510, "76561197960287930")        -- 指定成就数据拉取源 SteamID
 
-setManifestid(1361511,"5656605350306673283") -- 固定 depotid:1361511 manifest_gid:5656605350306673283，大小默认为 0
-setManifestid(1361511,"5656605350306673283", 12345678) -- 同上，但指定明确大小
+addprocess(1361510, "CustomGame.exe")         -- 为无 SteamAppId 环境变量的进程映射 AppID
+seteticketurl("https://example.com/eticket")  -- 在线动态获取 ETicket 端点（可选）
 
-setAppTicket(1361510,"0100000000000000...") -- 将 AppTicket 存入内存凭据存储
-setETicket(1361510,"0100000000000000...")   -- 将 ETicket 存入内存凭据存储
-
-setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用于 appid 1361510
--- 若未配置，启用时使用 stats API；否则使用默认 SteamID 76561198028121353
-
-nodenuvo(1361510) -- 显式标记 appid 1361510 为非 Denuvo 游戏，跳过保护扫描与清单同步（启动选项中加 -nodenuvo 亦可）
-forcedenuvo(1361510) -- 强制将 appid 1361510 标记为 Denuvo 保护游戏（启动选项中加 -forcedenuvo 亦可）
+nodenuvo(1361510)    -- 跳过 Denuvo 处理（等价于启动项 -nodenuvo，别名: disallowdenuvo）
+forcedenuvo(1361510) -- 强制标记为 Denuvo（等价于启动项 -forcedenuvo）
 ```
+所有函数名**不区分大小写**。
 
-所有函数名**不区分大小写**。`setAppTicket`、`setappticket`、`nodenuvo`、`forcedenuvo`、`noDenuvo`、`SETManifestid` 等都是等价的。每个注册的函数都适用（`addAppId`、`AddToken`、`SETManifestid` 等）。
+---
 
-### 联机修复 (Online Fix)
-- 在 Steam 启动选项中添加 `-onlinefix`，即可启用基于 480 (Spacewar) 的在线联机功能，默认自动保护真实存档且无需额外参数。同一时间只能运行一个此类游戏。若要还原，直接移除 `-onlinefix` 即可。
-- 极少数特定游戏若联机搜不到房间（需匹配 480 联机证书），可改为添加 `-onlinefix -p2pflip`。注意：该参数存在兼容性问题（可能导致部分游戏黑屏、报错闪退或存档错位），非必要不建议使用。
+## 配置（可选）
 
-### 配置（可选）
-
-将 `opensteamtool.example.toml` 重命名为 `opensteamtool.toml` 并放在 Steam 根目录（与 `steam.exe` 同级）。
-若找不到配置文件，则使用内置默认值——不会自动创建。
-文件在 Steam 运行时被监视；有效更改会热重载，无需重启 Steam。
+将 `opensteamtool.example.toml` 重命名为 `opensteamtool.toml`，放置于便携目录根目录或 Steam 根目录。修改后自动热重载。
 
 ```toml
 [log]
-# 仅调试构建。级别：trace、debug、info、warn、error
+# 仅调试构建有效：trace, debug, info, warn, error
 level = "info"
 
 [manifest]
-# 仓库 manifest 请求码的上游 API。选项："manifestdex"、"opensteamtool"、"steamrun"、"wudrm"
+# 上游 API："manifestdex"（默认）、"opensteamtool"、"steamrun"、"wudrm"
 url = "manifestdex"
-
-# manifest 请求的 HTTP 超时（毫秒）
 timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
 [stats]
-# 当没有 Lua setStat 覆盖时查询 https://stats.opensteamtool.com/{appid}
-# 优先级：setStat > stats API > 硬编码预设 SteamID
+# 未配置 setStat 时查询 https://stats.opensteamtool.com/{appid}
 enable_api = true
 
-# 额外的 Lua 配置目录（可选）
-# 文件在默认 <Steam>/config/lua 文件夹之后加载
-# 默认文件夹总是最后加载，因此用户文件优先级更高
 [lua]
+# 额外加载的 Lua 配置目录列表（可选）
 paths = []
 
-[inject]
-# 可选的游戏进程库注入
-# 注入的库必须与目标进程架构匹配
+[cloud]
+# 启用基于 CloudRedirect 的云存档透明重定向（需配合其伴侣客户端使用）
 enabled = false
-# library_x64 = "OpenSteamTool.GameHook.x64.dll"
-# library_x86 = "OpenSteamTool.GameHook.x86.dll"
+# library = "cloud_redirect.dll"
 
-# 可选元数据镜像。参见下面的"Steam 版本兼容性"
+# 可选游戏进程第三方 DLL 注入（表数组，可配置多个）
+[[inject]]
+path = "OnlineFix.dll"
+when_cmdline = "-onlinefix"
+when_appids = [1361510]
+all_games = false
+
 [remote]
+# 可选特征码元数据镜像（默认优先 GitHub，自动回退 jsDelivr）
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 
 [denuvo]
-# 切号授权或使用 -d+ 同步时，是否在 <AppId>.lua 中激活 setManifestid 锁定清单。
-# true  (默认)  → 写入活跃的 setManifestid 锁定已安装版本 GID，防止 Steam 静默更新破坏 Denuvo 离线授权。
-# false         → 所有 setManifestid 以注释态 (-- setManifestid) 写入并跳过清单镜像，
-#                 允许 Steam 客户端正常检测并自动下载官方更新补丁。
+# 切号授权或 -d+ 时是否锁定清单（默认 true）
 lock_manifest = true
 ```
 
-### 通过 Lua 获取 Manifest
+### 第三方 DLL 注入说明
+| 字段 | 说明 |
+| :--- | :--- |
+| `path` | DLL 路径。裸文件名优先在 toml 目录、DLL 目录及 Steam 根目录解析，支持绝对路径 |
+| `when_cmdline` | 可选。启动命令行中必须包含的子串 |
+| `when_appids` | 可选。限定目标 AppID 列表 |
+| `all_games` | 可选。`false`（默认）仅对 Lua 解锁游戏生效；`true` 对所有游戏生效 |
 
-支持两个 manifest 码函数：
+---
 
-#### `fetch_manifest_code(gid)`
+## 调试日志
 
-基础函数，只接收 manifest GID
-
-#### `fetch_manifest_code_ex(app_id, depot_id, gid)` *（推荐）*
-
-扩展函数，接收 `app_id`、`depot_id` 和 `gid`。允许构造需要应用识别的 API 端点
-
-C++ 运行时提供两个 Lua 辅助函数：
-
-| 函数 | 签名 | 返回值 |
-|------|------|--------|
-| `http_get`  | `http_get(url [, headers])`       | `body, status_code` |
-| `http_post` | `http_post(url, body [, headers])` | `body, status_code` |
-
-`headers` 是可选表：`{["Key"]="Value", ...}`
-
-### Steam 版本兼容性
-
-OpenSteamTool 不再在 DLL 中内置字节模式签名。相反，每次启动时它计算磁盘上 `steamclient64.dll` 和 `steamui.dll` 的 SHA-256，并从上游跟踪器 [`mmxlyo/steam-monitor`](https://github.com/mmxlyo/steam-monitor)（`pattern` 分支）查找匹配的模式文件
-
-查找顺序（每次启动）：
-
-1. **GitHub raw** — `https://raw.githubusercontent.com/mmxlyo/steam-monitor/pattern/...`。规范来源
-2. **jsDelivr CDN** — 如果 GitHub raw 无法访问（连接拒绝/超时/5xx）时自动回退。无需配置。在 `raw.githubusercontent.com` 被封锁但 jsDelivr 可访问的地区很有用（如中国大陆）
-3. **本地缓存** — `<Steam>\opensteamtool\pattern\<subdir>\<sha256>.toml`。仅当远程不可达时使用。每次成功远程获取后覆盖缓存
-
-每次启动都会咨询远程，因此用户自动获取上游重新发布（例如机器人添加新签名或修复现有签名），无需清除任何缓存
-
-如果某步返回 **HTTP 404**，镜像循环立即停止——所有镜像提供相同内容，因此 404 意味着上游机器人尚未为此 Steam 版本发布 TOML。代码然后回退到本地缓存（如果存在）；否则出现一次性弹窗，显示不匹配的 DLL 名称、其 SHA-256、预期缓存路径和上游 URL。仅禁用与该 DLL 相关的钩子——OpenSteamTool 的其余部分继续工作
-
-如果你知道给定版本的布局，也可以手动将模式 TOML 放入缓存目录；文件名必须为 `<sha256>.toml`。下次远程不可达时缓存回退会拾取它
-
-> 每次启动执行简短的出站 HTTPS 请求（每个 DLL 一个：`steamclient64.dll`、`steamui.dll`）。下载的内容很小（每个约 10 KB），工作在线程上运行，因此永远不会阻塞 Steam 加载器
-
-#### 使用不同的镜像
-
-对大多数用户来说，内置的 **GitHub -> jsDelivr** 回退已经足够。要使用私有镜像或内网服务器，配置完整的 URL 模板。自定义镜像替换内置远程源；本地缓存回退仍然可用
-
-模板必须包含 `{channel}`、`{component}` 和 `{sha256}`。当前使用的通道是 `pattern` 和 `ipc`
-
-```toml
-[remote]
-url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
-# url_template = "https://fast.jsdelivr.net/gh/mmxlyo/steam-monitor@{channel}/{component}/{sha256}.toml"
-```
-
-### 调试日志
-
-调试构建在 `<Steam>/opensteamtool/` 下写入每个模块的日志文件：
+调试构建在 `<Steam或便携目录>/opensteamtool/` 下输出模块日志：
 
 | 文件 | 来源 | 内容 |
-|------|------|------|
-| `main.log` | 通用 | 初始化、配置加载、Lua 解析、工具 |
-| `ipc.log` | `LOG_IPC_*` | IPC 命令、InterfaceCall 分发、欺骗 |
-| `netpacket.log` | `LOG_NETPACKET_*` | 网络包发送/接收、eMsg 分发 |
-| `manifest.log` | `LOG_MANIFEST_*` | Manifest 下载、`fetch_manifest_code`、manifest 绑定 |
-| `decryptionkey.log` | `LOG_DECRYPTIONKEY_*` | 仓库解密密钥注入 |
-| `keyvalue.log` | `LOG_KEYVALUE_*` | KeyValues 补丁（manifest 绑定） |
-| `misc.log` | `LOG_MISC_*` | 引擎指针捕获、AppId 提示 |
-| `achievement.log` | `LOG_ACHIEVEMENT_*` | UserStats 请求/响应、steamid 欺骗 |
+| :--- | :--- | :--- |
+| `main.log` | 通用 | 初始化、配置加载、Lua 解析 |
+| `ipc.log` | `LOG_IPC_*` | IPC 命令、接口分发与伪造 |
+| `netpacket.log` | `LOG_NETPACKET_*` | 网络包拦截、eMsg 调度 |
+| `manifest.log` | `LOG_MANIFEST_*` | 清单下载与自动镜像同步 |
+| `decryptionkey.log` | `LOG_DECRYPTIONKEY_*` | Depot 解密密钥注入 |
+| `keyvalue.log` | `LOG_KEYVALUE_*` | KeyValues 清单锁定修补 |
+| `misc.log` | `LOG_MISC_*` | 引擎指针捕获与 AppID 映射 |
+| `achievement.log` | `LOG_ACHIEVEMENT_*` | 统计与成就数据处理 |
 | `pics.log` | `LOG_PICS_*` | PICS 访问令牌注入 |
-| `package.log` | `LOG_PACKAGE_*` | 包注入、FileWatcher 事件 |
-| `onlinefix.log` | `LOG_ONLINEFIX_*` | 在线修复（480 AppId 欺骗） |
-| `richpresence.log` | `LOG_RICHPRESENCE_*` | 丰富状态包构造和注入 |
-| `steamui.log` | `LOG_STEAMUI_*` | SteamUI 钩子诊断 |
-| `pipe.log` | `LOG_PIPE_*` | 管道握手、进程检查、Denuvo 授权、库注入 |
-| `platform.log` | `LOG_PLATFORM_*` | 平台助手诊断，包括远程进程操作 |
+| `package.log` | `LOG_PACKAGE_*` | Package 0 授权与热重载撤销 |
+| `onlinefix.log` | `LOG_ONLINEFIX_*` | 480 联机修复与 AppID 保护 |
+| `richpresence.log` | `LOG_RICHPRESENCE_*` | 丰富状态 (Rich Presence) 注入 |
+| `steamui.log` | `LOG_STEAMUI_*` | SteamUI 界面状态同步 |
+| `inject.log` | `LOG_INJECT_*` | 第三方 DLL 注入匹配与结果 |
+| `pipe.log` | `LOG_PIPE_*` | 管道握手、Denuvo 认证调度 |
+| `platform.log` | `LOG_PLATFORM_*` | 平台底层与远程注入诊断 |
 
-日志级别由 `opensteamtool.toml` 中的 `[log] level` 控制
+---
 
 ## 构建
 
-### 要求
+### 环境要求
 - Windows 10/11
 - CMake 3.20+
-- 带有 MSVC（x64 工具链）的 Visual Studio 2022
+- Visual Studio 2022（MSVC x64 工具链）
 
-### 运行时要求
-- Steam 更新后首次启动需要访问 `raw.githubusercontent.com` 的出站 HTTPS（参见 [Steam 版本兼容性](#steam-版本兼容性)）。之后会缓存
-
-### 快速构建
+### 构建命令
 ```powershell
 build.bat
 ```
 
-### 输出
-- Debug：`build/Debug/OpenSteamTool.dll`、`build/Debug/dwmapi.dll`、`build/Debug/xinput1_4.dll`、`build/Debug/ost-Injector.exe` 以及自动复制的辅助脚本
-- Release：`build/Release/OpenSteamTool.dll`、`build/Release/dwmapi.dll`、`build/Release/xinput1_4.dll`、`build/Release/ost-Injector.exe` 以及自动复制的辅助脚本
+### 输出产物
+* **核心组件**（位于 `build/Release/` 或 `build/Debug/`）：
+  - `OpenSteamTool.dll`、`dwmapi.dll`、`xinput1_4.dll`、`ost-Injector.exe` 及辅助脚本
+* **独立提取工具**（位于 `build/tools/Release/` 或 `build/tools/Debug/`）：
+  - `extract_tickets.exe`（主发布包默认排除，由 `build.bat` 显式编译）
+
+---
+
+## 鸣谢
+感谢以下开源项目与贡献者支持：
+- [OpenSteam001/OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool) — 上游项目基石
+- [Selectively11/CloudRedirect](https://github.com/Selectively11/CloudRedirect) — Steam 云存档重定向引擎
+- [Berkecann](https://github.com/Berkecann) — 贡献 ManifestDeX 默认清单提供源 ([PR #200](https://github.com/OpenSteam001/OpenSteamTool/pull/200))
+- [microsoft/Detours](https://github.com/microsoft/Detours) — 二进制 API 拦截库
+- [marzer/tomlplusplus](https://github.com/marzer/tomlplusplus) — C++ TOML 解析器
+- [gabime/spdlog](https://github.com/gabime/spdlog) — 高性能快速日志库
+
+---
 
 ## 免责声明
-本项目仅供研究和教育目的使用。你负责遵守当地法律、平台服务条款和软件许可证。
+本项目仅供研究和教育目的使用。使用者须自行遵守当地法律及相关平台服务条款。
