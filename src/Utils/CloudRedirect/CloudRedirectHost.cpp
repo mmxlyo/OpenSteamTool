@@ -371,6 +371,7 @@ void Shutdown() {
     std::lock_guard lock(g_mutex);
     if (!g_active.exchange(false)) return;
     g_cachedAccountId.store(0, std::memory_order_release);
+    g_onlineFixResolver.store(nullptr, std::memory_order_release);
     if (g_shutdownFn) {
         try {
             g_shutdownFn();
