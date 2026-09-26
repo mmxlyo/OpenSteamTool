@@ -1632,12 +1632,12 @@ namespace LuaConfig{
     std::string FindLuaFileForAppId(AppId_t appId) {
         std::shared_lock lock(g_configSharedMutex);
         for (const auto& [filePath, depots] : g_fileDepots) {
-            if (std::find(depots.begin(), depots.end(), appId) != depots.end()) {
+            if (depots.contains(appId)) {
                 return filePath;
             }
         }
         for (const auto& [filePath, tickets] : g_fileAppTickets) {
-            if (std::find(tickets.begin(), tickets.end(), appId) != tickets.end()) {
+            if (tickets.contains(appId)) {
                 return filePath;
             }
         }
