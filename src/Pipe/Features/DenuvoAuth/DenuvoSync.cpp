@@ -655,6 +655,7 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                 LOG_ERROR("DenuvoSync: failed to write {}", luaFilePath.string());
                 return false;
             }
+            LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
         } else {
             // ── Case 2: In-place update / re-locking for existing Lua ────────────
             LOG_INFO("DenuvoSync: checking and updating existing <AppId>.lua for appId={}", appId);
@@ -673,6 +674,7 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
 
             std::unordered_set<uint32_t> handledDepots;
             int lastManifestLineIdx = -1;
+            bool manifestModified = false;
 
             for (size_t i = 0; i < lines.size(); ++i) {
                 std::string_view sv = TrimWhitespace(lines[i]);
@@ -695,10 +697,12 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
                         if (ec2 == std::errc{} && dId != 0) {
                             auto itDepot = acfData.installedDepots.find(dId);
                             if (itDepot != acfData.installedDepots.end() && !itDepot->second.empty() && itDepot->second != "0") {
-                                if (shouldLockManifest) {
-                                    lines[i] = "setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
-                                } else {
-                                    lines[i] = "-- setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
+                                std::string newLine = shouldLockManifest
+                                    ? "setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")"
+                                    : "-- setManifestid(" + std::to_string(dId) + ", \"" + itDepot->second + "\")";
+                                if (lines[i] != newLine) {
+                                    lines[i] = std::move(newLine);
+                                    manifestModified = true;
                                 }
                                 handledDepots.insert(dId);
                             }
@@ -724,17 +728,20 @@ bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus) {
             if (!missingManifestLines.empty()) {
                 size_t insertPos = lastManifestLineIdx >= 0 ? static_cast<size_t>(lastManifestLineIdx + 1) : lines.size();
                 lines.insert(lines.begin() + insertPos, missingManifestLines.begin(), missingManifestLines.end());
+                manifestModified = true;
             }
 
-            if (!AtomicWriteLines(luaFilePath, lines)) {
-                LOG_ERROR("DenuvoSync: failed to update {}", luaFilePath.string());
-                return false;
+            if (manifestModified) {
+                if (!AtomicWriteLines(luaFilePath, lines)) {
+                    LOG_ERROR("DenuvoSync: failed to update {}", luaFilePath.string());
+                    return false;
+                }
+                LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
+            } else {
+                LOG_DEBUG("DenuvoSync: manifests in {} are already up-to-date", luaFilePath.string());
             }
         }
     }
-
-    // Immediately load the written/updated Lua configuration into memory
-    LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaFilePath));
 
     if (shouldLockManifest) {
         // Mirror .manifest files into <AppId>/ folder and sync to Steam depotcache
