@@ -74,7 +74,13 @@ namespace {
             return {};
         }
 
-        value.resize(result);
+        if (result > static_cast<int32>(value.size())) {
+            LOG_DECRYPTIONKEY_WARN("GetConfigStoreLocalBinary: returned size {} exceeds buffer {} for KeyName='{}'",
+                                   result, value.size(), keyName);
+            return {};
+        }
+
+        value.resize(static_cast<size_t>(result));
         LOG_DECRYPTIONKEY_DEBUG("GetConfigStoreLocalBinary: got value for KeyName='{}' ({} bytes)",
                                 keyName, value.size());
         return value;
