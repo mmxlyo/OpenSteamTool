@@ -134,10 +134,15 @@ void PrewarmStatSteamId(AppId_t appId) {
     }
 
     LOG_ACHIEVEMENT_DEBUG("Starting background prewarm for stat steamid appid={}", appId);
-    OSTPlatform::Thread::StartDetached([appId]() -> uint32_t {
+    const bool started = OSTPlatform::Thread::StartDetached([appId]() -> uint32_t {
         ExecuteFetch(appId, nullptr);
         return 0;
     });
+    if (!started) {
+        LOG_ACHIEVEMENT_WARN("Failed to start detached prewarm thread for appid={}", appId);
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_inFlight.erase(appId);
+    }
 }
 
 bool FetchStatSteamId(AppId_t appId, uint64_t* outSteamId) {

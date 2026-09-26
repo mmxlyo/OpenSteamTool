@@ -1092,12 +1092,12 @@ namespace Hooks_NetPacket_RichPresence {
             } catch (...) {
                 LOG_RICHPRESENCE_ERROR("NotifyAppRunning({}, true) failed with unknown exception", newTracked);
             }
+            LuaConfig::PrewarmStatSteamId(newTracked);
         }
 
         std::lock_guard lock(g_RPMutex);
         if (newTracked != 0) {
             LOG_RICHPRESENCE_INFO("Tracking topmost appid {}", newTracked);
-            LuaConfig::PrewarmStatSteamId(newTracked);
             if (BuildInject(newTracked)) g_InjectPending = true;
         } else if (topmost == 0) {
             // Stack went empty — inject a clear so the cache reverts.
