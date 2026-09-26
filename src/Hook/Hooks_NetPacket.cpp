@@ -8,6 +8,7 @@
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
+#include "Utils/Config/LuaConfig.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -1091,6 +1092,7 @@ namespace Hooks_NetPacket_RichPresence {
             } catch (...) {
                 LOG_RICHPRESENCE_ERROR("NotifyAppRunning({}, true) failed with unknown exception", newTracked);
             }
+            LuaConfig::PrewarmStatSteamId(newTracked);
         }
 
         std::lock_guard lock(g_RPMutex);
@@ -1450,9 +1452,13 @@ namespace {
         // synthesized response is delivered from the RecvPkt hook).
         // ExitSyncDone/ConflictResolution are notifications that must reach
         // Steam's internal cloud state machine untouched.
-        if (std::strncmp(targetJobName, "Cloud.", 6) == 0) {
-            if (std::strcmp(targetJobName, "Cloud.SignalAppExitSyncDone#1") == 0 ||
-                std::strcmp(targetJobName, "Cloud.ClientConflictResolution#1") == 0)
+        const std::string_view jobView(targetJobName ? targetJobName : "");
+        if (jobView.starts_with("Cloud.")) {
+            if (jobView == "Cloud.SignalAppExitSyncDone#1") {
+                Hooks_Misc::ResetOnlineFixState();
+                return false;
+            }
+            if (jobView == "Cloud.ClientConflictResolution#1")
                 return false;
             if (Hooks_NetPacket_Cloud::HandleSend(targetJobName, pBody, cbBody, pHdr, cbHdr))
                 g_SuppressSend = true;

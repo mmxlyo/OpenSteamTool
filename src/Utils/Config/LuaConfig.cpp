@@ -559,6 +559,7 @@ namespace LuaConfig{
             g_fileManifestOverrides[g_currentFile][depotId] = override;
             RebuildManifestOverride(depotId);
         } else {
+            std::unique_lock lock(g_configSharedMutex);
             SetActiveManifestOverride(depotId, override);
         }
         return 0;
@@ -651,6 +652,7 @@ namespace LuaConfig{
             g_fileStats[g_currentFile][appId] = steamId;
             RebuildStatSteamId(appId);
         } else {
+            std::unique_lock lock(g_configSharedMutex);
             StatSteamIdSet[appId] = steamId;
         }
         return 0;
@@ -806,6 +808,16 @@ namespace LuaConfig{
         return PinnedApps.count(AppId) > 0;
     }
 
+    void PrewarmStatSteamId(AppId_t AppId) {
+        if (AppId == k_uAppIdInvalid) return;
+        {
+            std::shared_lock lock(g_configSharedMutex);
+            if (StatSteamIdSet.contains(AppId))
+                return;
+        }
+        StatsClient::PrewarmStatSteamId(AppId);
+    }
+
     uint64_t GetStatSteamId(AppId_t AppId) {
         {
             std::shared_lock lock(g_configSharedMutex);
@@ -814,7 +826,7 @@ namespace LuaConfig{
                 return it->second;
         }
         uint64_t apiSteamId = 0;
-        if (StatsClient::FetchStatSteamId(AppId, &apiSteamId))
+        if (StatsClient::TryGetCachedStatSteamId(AppId, &apiSteamId))
             return apiSteamId;
         return kDefaultStatSteamId;
     }
