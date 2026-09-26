@@ -3,6 +3,7 @@
 #include "Utils/HookSupport/VehCommon.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
+#include "Utils/Config/LuaConfig.h"
 #include "dllmain.h"
 
 #include <algorithm>
@@ -62,6 +63,7 @@ namespace {
         const char* cmdLine = VehCommon::GetArg<const char*>(ctx, 3);
 
         PipeManager::DenuvoAuth::OnSpawnProcess(appId, pExePath, cmdLine);
+        LuaConfig::PrewarmStatSteamId(appId);
 
         if (cmdLine && HasCmdLineArg(cmdLine, "-onlinefix"))
         {

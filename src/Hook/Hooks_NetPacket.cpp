@@ -8,6 +8,7 @@
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
+#include "Utils/Config/LuaConfig.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -1096,6 +1097,7 @@ namespace Hooks_NetPacket_RichPresence {
         std::lock_guard lock(g_RPMutex);
         if (newTracked != 0) {
             LOG_RICHPRESENCE_INFO("Tracking topmost appid {}", newTracked);
+            LuaConfig::PrewarmStatSteamId(newTracked);
             if (BuildInject(newTracked)) g_InjectPending = true;
         } else if (topmost == 0) {
             // Stack went empty — inject a clear so the cache reverts.
