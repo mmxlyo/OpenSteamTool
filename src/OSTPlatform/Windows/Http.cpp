@@ -10,10 +10,15 @@
 
 #include <chrono>
 #include <format>
+#include <memory>
 #include <string>
 
 namespace OSTPlatform::Http {
 namespace {
+
+struct GlobalFreeDeleter {
+    void operator()(void* p) const noexcept { if (p) ::GlobalFree(p); }
+};
 
 struct ParsedUrl {
     std::wstring host;
@@ -79,10 +84,29 @@ Result Execute(const wchar_t* method,
 
     auto t0 = std::chrono::steady_clock::now();
 
+    WINHTTP_CURRENT_USER_IE_PROXY_CONFIG ieProxy{};
+    const BOOL hasIeProxy = WinHttpGetIEProxyConfigForCurrentUser(&ieProxy);
+
+    std::unique_ptr<WCHAR, GlobalFreeDeleter> autoProxy(hasIeProxy ? ieProxy.lpszProxy : nullptr);
+    std::unique_ptr<WCHAR, GlobalFreeDeleter> autoBypass(hasIeProxy ? ieProxy.lpszProxyBypass : nullptr);
+    std::unique_ptr<WCHAR, GlobalFreeDeleter> autoConfigUrl(hasIeProxy ? ieProxy.lpszAutoConfigUrl : nullptr);
+
+    DWORD accessType = WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
+    const WCHAR* proxyName = WINHTTP_NO_PROXY_NAME;
+    const WCHAR* proxyBypass = WINHTTP_NO_PROXY_BYPASS;
+
+    if (autoProxy && autoProxy.get()[0] != L'\0') {
+        accessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+        proxyName = autoProxy.get();
+        if (autoBypass && autoBypass.get()[0] != L'\0') {
+            proxyBypass = autoBypass.get();
+        }
+    }
+
     Windows::UniqueWinHttpHandle hSession(WinHttpOpen(L"OpenSteamTool/1.0",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-        WINHTTP_NO_PROXY_NAME,
-        WINHTTP_NO_PROXY_BYPASS,
+        accessType,
+        proxyName,
+        proxyBypass,
         0));
     if (!hSession) {
         OSTP_LOG_WARN("{} - WinHttpOpen failed (error={})", url ? url : "", GetLastError());

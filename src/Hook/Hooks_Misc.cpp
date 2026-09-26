@@ -77,9 +77,7 @@ namespace {
             LOG_MISC_INFO("SpawnProcess: appid {} -> {}, suppressFlip={}, cmd=\"{}\"",
                           appId, kOnlineFixAppId, suppress, cmdLine);
         } else {
-            g_OnlineFixRealAppId.store(0, std::memory_order_release);
-            g_NetworkingSocketsActive.store(false, std::memory_order_release);
-            g_SuppressAppIdFlip.store(true, std::memory_order_release);
+            Hooks_Misc::ResetOnlineFixState();
         }
     }
 
@@ -201,9 +199,22 @@ namespace Hooks_Misc {
 
     
     AppId_t ResolveAppId() {
-        const AppId_t realAppId = g_OnlineFixRealAppId.load(std::memory_order_relaxed);
-        if (realAppId != 0) return realAppId;
-        return GetAppIDForCurrentPipeWrap();
+        const AppId_t pipeAppId = GetAppIDForCurrentPipeWrap();
+        if (pipeAppId == kOnlineFixAppId) {
+            const AppId_t realAppId = g_OnlineFixRealAppId.load(std::memory_order_acquire);
+            if (realAppId != 0) return realAppId;
+        }
+        if (pipeAppId != 0) return pipeAppId;
+        return g_OnlineFixRealAppId.load(std::memory_order_acquire);
+    }
+
+    void ResetOnlineFixState() {
+        const AppId_t oldAppId = g_OnlineFixRealAppId.exchange(0, std::memory_order_release);
+        g_NetworkingSocketsActive.store(false, std::memory_order_release);
+        g_SuppressAppIdFlip.store(true, std::memory_order_release);
+        if (oldAppId != 0) {
+            LOG_MISC_INFO("ResetOnlineFixState: atomically cleared OnlineFix state (was appid {})", oldAppId);
+        }
     }
 
     bool IsOnlineFixActive() {

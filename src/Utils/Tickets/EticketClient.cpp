@@ -42,10 +42,16 @@ namespace {
     // Short connect timeouts so a down/unreachable backend fails fast and the
     // caller falls back; generous recv because the backend mints via a live
     // Steam CM round-trip (~1-5s).
-    constexpr uint32_t kResolveMs = 2000;
-    constexpr uint32_t kConnectMs = 2000;
-    constexpr uint32_t kSendMs    = 3000;
-    constexpr uint32_t kRecvMs    = 8000;
+    using namespace std::chrono_literals;
+    constexpr auto kResolveTimeout = 1000ms;
+    constexpr auto kConnectTimeout = 1500ms;
+    constexpr auto kSendTimeout    = 2000ms;
+    constexpr auto kRecvTimeout    = 8000ms;
+
+    constexpr uint32_t kResolveMs = static_cast<uint32_t>(kResolveTimeout.count());
+    constexpr uint32_t kConnectMs = static_cast<uint32_t>(kConnectTimeout.count());
+    constexpr uint32_t kSendMs    = static_cast<uint32_t>(kSendTimeout.count());
+    constexpr uint32_t kRecvMs    = static_cast<uint32_t>(kRecvTimeout.count());
 
     struct CachedTickets {
         std::vector<uint8_t> eticket;

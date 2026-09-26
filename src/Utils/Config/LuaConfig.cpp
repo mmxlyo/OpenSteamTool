@@ -559,6 +559,7 @@ namespace LuaConfig{
             g_fileManifestOverrides[g_currentFile][depotId] = override;
             RebuildManifestOverride(depotId);
         } else {
+            std::unique_lock lock(g_configSharedMutex);
             SetActiveManifestOverride(depotId, override);
         }
         return 0;
@@ -651,6 +652,7 @@ namespace LuaConfig{
             g_fileStats[g_currentFile][appId] = steamId;
             RebuildStatSteamId(appId);
         } else {
+            std::unique_lock lock(g_configSharedMutex);
             StatSteamIdSet[appId] = steamId;
         }
         return 0;

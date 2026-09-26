@@ -32,9 +32,13 @@ namespace Hooks_Misc {
     // Uses CUtlBuffer::EnsureCapacity from steamclient, resolved on first call.
     bool EnsureBufferCapacity(CUtlBuffer* pWrite, uint32 newCapacity,bool updatePut = false);
 
-    // Resolve the real appid: if OnlineFix is active return real appid,
-    // otherwise fall back to GetAppIDForCurrentPipe().
+    // Resolve the real appid: if OnlineFix is active and pipe/context matches 480
+    // return real appid, otherwise fall back to GetAppIDForCurrentPipe().
     AppId_t ResolveAppId();
+
+    // Atomically reset OnlineFix state (called when Steam signals exit sync completion
+    // or when a non-onlinefix game launches).
+    void ResetOnlineFixState();
 
     // Get localized game name via GetAppDataFromAppInfo (cached).
     std::string GetGameNameByAppID(AppId_t appId);
