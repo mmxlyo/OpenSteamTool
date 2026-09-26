@@ -1,19 +1,21 @@
 // xinput1_4.dll HiJack Project - True Dynamic Wrapper (With Undocumented Ordinals)
 #include <windows.h>
+#include <cstdio>
 #include <cstring>
-#include <string>
+#include <mutex>
 
 // ─── 1. Real XInput Function Pointers ───────────────────────────
 static HMODULE g_hRealXInput = nullptr;
+static std::once_flag g_xinputInitOnce;
 
 // Standard
-typedef DWORD(WINAPI* XInputGetState_t)(DWORD, void*);
-typedef DWORD(WINAPI* XInputSetState_t)(DWORD, void*);
-typedef DWORD(WINAPI* XInputGetCapabilities_t)(DWORD, DWORD, void*);
-typedef void(WINAPI* XInputEnable_t)(BOOL);
-typedef DWORD(WINAPI* XInputGetAudioDeviceIds_t)(DWORD, LPWSTR, UINT*, LPWSTR, UINT*);
-typedef DWORD(WINAPI* XInputGetBatteryInformation_t)(DWORD, BYTE, void*);
-typedef DWORD(WINAPI* XInputGetKeystroke_t)(DWORD, DWORD, void*);
+using XInputGetState_t = DWORD(WINAPI*)(DWORD, void*);
+using XInputSetState_t = DWORD(WINAPI*)(DWORD, void*);
+using XInputGetCapabilities_t = DWORD(WINAPI*)(DWORD, DWORD, void*);
+using XInputEnable_t = void(WINAPI*)(BOOL);
+using XInputGetAudioDeviceIds_t = DWORD(WINAPI*)(DWORD, LPWSTR, UINT*, LPWSTR, UINT*);
+using XInputGetBatteryInformation_t = DWORD(WINAPI*)(DWORD, BYTE, void*);
+using XInputGetKeystroke_t = DWORD(WINAPI*)(DWORD, DWORD, void*);
 
 static XInputGetState_t o_XInputGetState = nullptr;
 static XInputSetState_t o_XInputSetState = nullptr;
@@ -32,32 +34,34 @@ static FARPROC o_104 = nullptr; // XInputGetBaseBusInformation
 static FARPROC o_108 = nullptr; // XInputGetAudioDeviceIdsEx
 
 // ─── 2. Core Initialization (Binding to the real System32 file) ───
-void LoadRealXInput() {
-    if (g_hRealXInput) return;
+void LoadRealXInput() noexcept {
+    std::call_once(g_xinputInitOnce, []() noexcept {
+        char sysDir[MAX_PATH] = {};
+        if (GetSystemDirectoryA(sysDir, MAX_PATH) > 0) {
+            char realPath[MAX_PATH] = {};
+            snprintf(realPath, sizeof(realPath), "%s\\xinput1_4.dll", sysDir);
 
-    char sysDir[MAX_PATH];
-    GetSystemDirectoryA(sysDir, MAX_PATH);
-    std::string realPath = std::string(sysDir) + "\\xinput1_4.dll";
+            g_hRealXInput = LoadLibraryA(realPath);
+            if (g_hRealXInput) {
+                // Load Standard API
+                o_XInputGetState = reinterpret_cast<XInputGetState_t>(GetProcAddress(g_hRealXInput, "XInputGetState"));
+                o_XInputSetState = reinterpret_cast<XInputSetState_t>(GetProcAddress(g_hRealXInput, "XInputSetState"));
+                o_XInputGetCapabilities = reinterpret_cast<XInputGetCapabilities_t>(GetProcAddress(g_hRealXInput, "XInputGetCapabilities"));
+                o_XInputEnable = reinterpret_cast<XInputEnable_t>(GetProcAddress(g_hRealXInput, "XInputEnable"));
+                o_XInputGetAudioDeviceIds = reinterpret_cast<XInputGetAudioDeviceIds_t>(GetProcAddress(g_hRealXInput, "XInputGetAudioDeviceIds"));
+                o_XInputGetBatteryInformation = reinterpret_cast<XInputGetBatteryInformation_t>(GetProcAddress(g_hRealXInput, "XInputGetBatteryInformation"));
+                o_XInputGetKeystroke = reinterpret_cast<XInputGetKeystroke_t>(GetProcAddress(g_hRealXInput, "XInputGetKeystroke"));
 
-    g_hRealXInput = LoadLibraryA(realPath.c_str());
-    if (g_hRealXInput) {
-        // Load Standard API
-        o_XInputGetState = (XInputGetState_t)GetProcAddress(g_hRealXInput, "XInputGetState");
-        o_XInputSetState = (XInputSetState_t)GetProcAddress(g_hRealXInput, "XInputSetState");
-        o_XInputGetCapabilities = (XInputGetCapabilities_t)GetProcAddress(g_hRealXInput, "XInputGetCapabilities");
-        o_XInputEnable = (XInputEnable_t)GetProcAddress(g_hRealXInput, "XInputEnable");
-        o_XInputGetAudioDeviceIds = (XInputGetAudioDeviceIds_t)GetProcAddress(g_hRealXInput, "XInputGetAudioDeviceIds");
-        o_XInputGetBatteryInformation = (XInputGetBatteryInformation_t)GetProcAddress(g_hRealXInput, "XInputGetBatteryInformation");
-        o_XInputGetKeystroke = (XInputGetKeystroke_t)GetProcAddress(g_hRealXInput, "XInputGetKeystroke");
-
-        // Load Undocumented Ordinals
-        o_100 = GetProcAddress(g_hRealXInput, (LPCSTR)100);
-        o_101 = GetProcAddress(g_hRealXInput, (LPCSTR)101);
-        o_102 = GetProcAddress(g_hRealXInput, (LPCSTR)102);
-        o_103 = GetProcAddress(g_hRealXInput, (LPCSTR)103);
-        o_104 = GetProcAddress(g_hRealXInput, (LPCSTR)104);
-        o_108 = GetProcAddress(g_hRealXInput, (LPCSTR)108);
-    }
+                // Load Undocumented Ordinals
+                o_100 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(100));
+                o_101 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(101));
+                o_102 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(102));
+                o_103 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(103));
+                o_104 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(104));
+                o_108 = GetProcAddress(g_hRealXInput, reinterpret_cast<LPCSTR>(108));
+            }
+        }
+    });
 }
 
 // ─── 3. Native Exports (Safely passing data to the game) ──────────
