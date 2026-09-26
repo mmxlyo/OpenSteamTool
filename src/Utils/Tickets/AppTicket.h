@@ -1,22 +1,23 @@
 #pragma once
 
 #include "Steam/Types.h"
-#include "OSTPlatform/include/SteamCredentialStore.h"
 
 #include <cstdint>
 #include <span>
 #include <vector>
 
 namespace AppTicket {
-    inline constexpr uint32 kAppTicketSteamIdOffset = static_cast<uint32>(OSTPlatform::SteamCredentialStore::kAppTicketSteamIdOffset);
+    // Canonical AppTicket binary layout constants:
+    // [uint32 Size][uint32 Version][uint64 SteamID][...]
+    inline constexpr uint32 kAppTicketSteamIdOffset = 8;
     inline constexpr uint32 kAppTicketAppIdOffset = 16;
     inline constexpr uint32 kAppTicketSignatureSize = 128;
-    inline constexpr size_t kSteamIdTicketMinimumSize = OSTPlatform::SteamCredentialStore::kSteamIdTicketMinimumSize;
+    inline constexpr size_t kSteamIdTicketMinimumSize = kAppTicketSteamIdOffset + sizeof(uint64_t); // 16
 
     enum class AppTicketSource {
-        CredentialStoreOnly,
+        MemoryOnly,
         ForgeOnly,
-        CredentialStoreThenForge,
+        MemoryThenForge,
     };
 
     struct AppOwnershipTicket {
@@ -28,18 +29,22 @@ namespace AppTicket {
         uint32 signatureSize = kAppTicketSignatureSize;
     };
 
-    // Reads the app ownership ticket cached by Steam's local credential store.
+    // External provider hook to query Steam client's internal ticket cache (IoC decoupling)
+    using SourceTicketProvider = std::vector<uint8_t> (*)(AppId_t appId);
+    void SetSourceTicketProvider(SourceTicketProvider provider);
+
+    // Reads the raw ticket directly from Steam's internal ConfigStore via the registered provider.
+    std::vector<uint8_t> GetSteamConfigStoreTicket(AppId_t appId);
+
+    // Reads the app ownership ticket cached in memory.
     // Returns an empty vector when no ticket is available.
-    std::vector<uint8_t> GetAppOwnershipTicketFromCredentialStore(AppId_t appId);
+    std::vector<uint8_t> GetCachedAppOwnershipTicket(AppId_t appId);
 
     bool GetAppOwnershipTicket(AppId_t appId, AppOwnershipTicket& ticket, AppTicketSource source);
 
-    // Reads the encrypted app ticket cached by Steam's local credential store.
+    // Reads the encrypted app ticket cached in memory.
     // Returns an empty vector when no ticket is available.
-    std::vector<uint8_t> GetEncryptedTicketFromCredentialStore(AppId_t appId);
-
-    //Get spoof steamID From the cached AppOwnershipTicket for the given AppId.
-    uint64_t GetSpoofSteamID(AppId_t appId);
+    std::vector<uint8_t> GetCachedEncryptedTicket(AppId_t appId);
 
     // Fast zero-copy query for the SteamID embedded inside the AppTicket.
     uint64_t GetTicketSteamID(AppId_t appId);
@@ -52,21 +57,18 @@ namespace AppTicket {
     uint64_t ExtractSteamIdFromTicketBytes(const std::vector<uint8_t>& ticket);
     uint64_t ExtractSteamIdFromTicketBytes(std::span<const uint8_t> ticket);
 
-    // Write AppTicket binary data to Steam's local credential store.
+    // Write AppTicket binary data to in-memory cache.
     bool WriteAppOwnershipTicket(AppId_t appId, const std::vector<uint8_t>& data);
 
     // Remove in-memory AppTicket for an appId.
     bool RemoveAppOwnershipTicket(AppId_t appId);
 
-    // Write ETicket binary data to Steam's local credential store.
+    // Write ETicket binary data to in-memory cache.
     bool WriteEncryptedTicket(AppId_t appId, const std::vector<uint8_t>& data);
 
     // Remove in-memory ETicket for an appId.
     bool RemoveEncryptedTicket(AppId_t appId);
 
-    // Write authorized SteamID to Steam's local credential store.
-    bool WriteSteamID(AppId_t appId, uint64_t steamId);
-
-    // Remove all cached and persisted credentials for an appId.
-    bool RemoveCredentials(AppId_t appId);
+    // Clear all cached tickets for an appId.
+    bool ClearCachedTickets(AppId_t appId);
 }

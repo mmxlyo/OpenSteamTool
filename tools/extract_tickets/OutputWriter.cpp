@@ -258,11 +258,7 @@ bool WriteOutputs(uint32_t appId,
 
     luaText += "-- App Ownership Ticket (AppTicket)\n";
     if (hasOwnership) {
-        if (!hasEncrypted) {
-            luaText += "-- Note: Commented out because ETicket was not extracted.\n";
-        }
-        luaText += std::format("{}setAppTicket({}, \"{}\")\n\n",
-                               hasEncrypted ? "" : "-- ",
+        luaText += std::format("setAppTicket({}, \"{}\")\n\n",
                                appId,
                                ToHexString(*ownership));
     } else {
@@ -339,11 +335,6 @@ bool WriteOutputs(uint32_t appId,
         std::cout << "[INFO] 未在 appinfo.vdf 中找到非零访问令牌 (该游戏可能无需 Access Token) / "
                   << "No non-zero access token found in appinfo.vdf for AppID " << appId
                   << " (this game may not require an access token).\n";
-    }
-
-    if (hasOwnership && !hasEncrypted) {
-        std::cout << "[TIP] 未检测到有效的 ETicket，已在 Lua 中将 AppTicket (setAppTicket) 一同自动注释。\n"
-                  << "      No valid ETicket found; AppTicket (setAppTicket) has also been commented out in Lua.\n";
     }
 
     std::cout << "[INFO] 配置文件已生成 / Ready-to-use Lua script saved to: " << luaPath << "\n";

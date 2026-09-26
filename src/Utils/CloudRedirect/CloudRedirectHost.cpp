@@ -6,7 +6,6 @@
 #include "Utils/Config/Config.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Logging/Log.h"
-#include "Hook/Hooks_Misc.h"
 
 #include <atomic>
 #include <filesystem>
@@ -53,6 +52,8 @@ namespace {
     CR_NotifyStatsStored_t  g_notifyStatsStored  = nullptr;
     CR_GetAchievements_t    g_getAchievements    = nullptr;
     CR_InstallVtableHooks_t g_installVtableHooks = nullptr;
+
+    std::atomic<OnlineFixAppResolver> g_onlineFixResolver{nullptr};
 
     // Routes CloudRedirect's notifications into OpenSteamTool's log instead of
     // popping a MessageBox from inside Steam.
@@ -106,11 +107,10 @@ namespace {
         std::erase_if(depots, [](AppId_t id) {
             return LuaConfig::IsOwned(id);
         });
-        if (Hooks_Misc::IsOnlineFixActive()) {
-            const AppId_t fixAppId = Hooks_Misc::ResolveAppId();
-            if (fixAppId != 0 && !LuaConfig::IsOwned(fixAppId) && std::find(depots.begin(), depots.end(), fixAppId) == depots.end()) {
-                depots.push_back(fixAppId);
-            }
+        const auto resolver = g_onlineFixResolver.load(std::memory_order_relaxed);
+        const AppId_t fixAppId = resolver ? resolver() : 0;
+        if (fixAppId != 0 && !LuaConfig::IsOwned(fixAppId) && std::find(depots.begin(), depots.end(), fixAppId) == depots.end()) {
+            depots.push_back(fixAppId);
         }
         return depots;
     }
@@ -258,6 +258,10 @@ void SyncAppSet() {
     }
 }
 
+void SetOnlineFixAppResolver(OnlineFixAppResolver resolver) {
+    g_onlineFixResolver.store(resolver, std::memory_order_release);
+}
+
 bool IsActive() {
     return g_active.load(std::memory_order_acquire);
 }
@@ -274,7 +278,9 @@ bool IsApp(uint32_t appId) {
         LOG_ERROR("CloudRedirect: CR_IsApp({}) failed with unknown exception", appId);
         return false;
     }
-    if (Hooks_Misc::IsOnlineFixActive() && appId == Hooks_Misc::ResolveAppId()) return true;
+    const auto resolver = g_onlineFixResolver.load(std::memory_order_relaxed);
+    const uint32_t fixAppId = resolver ? resolver() : 0;
+    if (fixAppId != 0 && appId == fixAppId) return true;
     return false;
 }
 
@@ -365,6 +371,7 @@ void Shutdown() {
     std::lock_guard lock(g_mutex);
     if (!g_active.exchange(false)) return;
     g_cachedAccountId.store(0, std::memory_order_release);
+    g_onlineFixResolver.store(nullptr, std::memory_order_release);
     if (g_shutdownFn) {
         try {
             g_shutdownFn();

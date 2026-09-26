@@ -1,5 +1,9 @@
 #include "dllmain.h"
 #include "Hook/HookManager.h"
+#include "Hook/Hooks_Decryption.h"
+#include "Hook/Hooks_Misc.h"
+#include "Hook/Hooks_Package.h"
+#include "Utils/Tickets/AppTicket.h"
 #include "Utils/Config/ConfigFileWatcher.h"
 #include "Utils/Config/LuaFileWatcher.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
@@ -8,7 +12,6 @@
 #include "Utils/SteamMetadata/SteamDiagnostics.h"
 #include "OSTPlatform/include/DynamicLibrary.h"
 #include "OSTPlatform/include/Encoding.h"
-#include "OSTPlatform/include/SteamCredentialStore.h"
 #include "OSTPlatform/include/Thread.h"
 
 #include <chrono>
@@ -76,9 +79,6 @@ bool InitializeSteamComponents(OSTPlatform::DynamicLibrary::ModuleHandle selfMod
     std::filesystem::create_directories(luaFs, ec);
     const std::string luaPath = PathToUtf8(luaFs);
     sprintf_s(LuaDir, kRuntimePathCapacity, "%s", luaPath.c_str());
-
-    const auto credFs = storageBase / "config" / "credentials";
-    OSTPlatform::SteamCredentialStore::SetStorageDirectory(credFs);
 
     // 4. Diversion shadow module cloning & loading:
     // Clone steamclient64.dll into bin\diversion64.dll so all hooks and patches
@@ -192,7 +192,7 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     // Install SteamUI hooks early so LoadModuleWithPath can intercept
     // and synchronize with client hook installation.
-    SteamUI::CoreHook();
+    HookManager::InstallUIHooks();
 
     // IPC method metadata (funcHash, fencepost, argc, ...)
     IPCLoader::Load(SteamclientPath);
@@ -211,13 +211,21 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
         }
     }
 
+    // Wire up lower-layer callbacks to hook notifications (IoC decoupling)
+    ConfigFileWatcher::SetLicenseChangedCallback(&Hooks_Package::NotifyLicenseChanged);
+    LuaFileWatcher::SetLicenseChangedCallback(&Hooks_Package::NotifyLicenseChanged);
+    AppTicket::SetSourceTicketProvider(&Hooks_Decryption::GetCacheAppOwnershipTicket);
+    CloudRedirectHost::SetOnlineFixAppResolver([]() -> uint32_t {
+        return Hooks_Misc::IsOnlineFixActive() ? Hooks_Misc::ResolveAppId() : 0;
+    });
+
     for (const auto& dir : watchDirs)
         LuaConfig::ParseDirectory(dir);
 
     LuaFileWatcher::Start(watchDirs);
     ConfigFileWatcher::Start(ConfigPath, LuaDir);
 
-    SteamClient::CoreHook();
+    HookManager::InstallClientHooks();
 
     // Surface any functions that FindPattern() could not locate.
     PatternLoader::ReportMissingFunctions();
@@ -260,8 +268,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
         if (pvReserved == nullptr) {
             ConfigFileWatcher::Stop();
             LuaFileWatcher::Stop();
-            SteamUI::CoreUnhook();
-            SteamClient::CoreUnhook();
+            HookManager::UninstallUIHooks();
+            HookManager::UninstallClientHooks();
             CloudRedirectHost::Shutdown();
         }
     }

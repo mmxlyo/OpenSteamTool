@@ -27,17 +27,15 @@ namespace PipeManager::DenuvoAuth {
 
     // Core synchronization / package generation function (-d+ / genuine ownership).
     // Guaranteed:
-    // 1. Never writes .bin files to disk! (credentials/ only has SteamID.txt)
+    // 1. Never creates credentials/ or writes SteamID.txt to disk!
     // 2. Locks all installed manifests in <AppId>.lua (inserts/uncomments/updates setManifestid).
-    // 3. Persists SteamID.txt for the active account to support offline Denuvo identity.
+    // 3. Directly embeds setAppTicket in <AppId>.lua for offline Denuvo identity and Capcom Error 54 immunity.
     bool SyncOrGenerate(AppId_t appId, const std::string& exePath, bool isDPlus);
 
-    // Called when a live EncryptedAppTicket is captured from Steam Client for an owned game.
-    // Refreshes the in-memory ETicket in SteamCredentialStore.
-    void OnEncryptedTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
-
-    // Called when a live AppOwnershipTicket is captured from Steam Client (eMsg 858 or IPC) for an owned game.
-    // Stores the ticket in memory in SteamCredentialStore and updates SteamID.txt.
-    void OnOwnershipTicketCaptured(AppId_t appId, const uint8_t* data, size_t size);
+    // Synchronizes the genuine AppTicket into <AppId>.lua.
+    // - If <AppId>.lua exists: uncomments commented setAppTicket, updates if different,
+    //   or appends if missing.
+    // - Updates in-memory credential store and re-parses configuration immediately.
+    bool SyncAppTicketToLua(AppId_t appId, const uint8_t* pTicketData, size_t ticketSize);
 
 } // namespace PipeManager::DenuvoAuth

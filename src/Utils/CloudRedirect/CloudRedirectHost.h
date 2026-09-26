@@ -17,6 +17,10 @@ namespace CloudRedirectHost {
     // Steam hooks are installed. steamInstallPath is the Steam root directory.
     void Initialize(const char* steamInstallPath);
 
+    // External resolver for active OnlineFix app ID (IoC decoupling)
+    using OnlineFixAppResolver = uint32_t (*)();
+    void SetOnlineFixAppResolver(OnlineFixAppResolver resolver);
+
     // Re-push the current unlocked-app set to CloudRedirect. Called after a Lua
     // hot-reload so the redirected set tracks addappid() changes.
     void SyncAppSet();

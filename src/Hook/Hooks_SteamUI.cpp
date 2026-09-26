@@ -1,5 +1,4 @@
 #include "Hooks_SteamUI.h"
-#include "HookManager.h"
 #include "HookMacros.h"
 #include "dllmain.h"
 #include "steam_messages.pb.h"

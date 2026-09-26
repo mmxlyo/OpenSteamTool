@@ -29,6 +29,9 @@ namespace {
     void HandlerPost_IClientUser_GetSteamID(CPipeClient* pipe,CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
         AppId_t appId = Hooks_Misc::ResolveAppId();
+        if (appId == 0) {
+            appId = PipeManager::DenuvoAuth::GetAuthorizedAppId(pipe);
+        }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
@@ -44,7 +47,7 @@ namespace {
             return;
         }
 
-        const uint64 spoofed = AppTicket::GetSpoofSteamID(appId);
+        const uint64 spoofed = AppTicket::GetTicketSteamID(appId);
         if (!spoofed) {
             return;
         }
@@ -64,42 +67,44 @@ namespace {
         if (req.cbMaxTicket() < 0) return;
 
         AppId_t appId = req.unAppID() == kOnlineFixAppId ? Hooks_Misc::ResolveAppId() : req.unAppID();
+        if (appId == 0) {
+            appId = PipeManager::DenuvoAuth::GetAuthorizedAppId(pipe);
+        }
         if (appId == 0) return;
 
         // If Steam's genuine implementation already returned a valid ticket (account owns the game),
-        // capture it dynamically to refresh credentials and leave it untouched to pass through cleanly.
+        // leave it untouched and pass through cleanly.
         GetAppOwnershipTicketExtendedDataResp origResp{pWrite, static_cast<size_t>(req.cbMaxTicket())};
         if (origResp.ok() && origResp.returnValue() > 0) {
             LuaConfig::MarkOwned(appId);
 
             auto ticketSpan = origResp.pTicket();
-            const size_t ticketLen = (std::min)(static_cast<size_t>(origResp.returnValue()), ticketSpan.size());
-            if (ticketLen > 0) {
-                PipeManager::DenuvoAuth::OnOwnershipTicketCaptured(appId, ticketSpan.data(), ticketLen);
-            } else if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
-                AppTicket::WriteSteamID(appId, *active);
+            if (!ticketSpan.empty()) {
+                const size_t ticketSize = (std::min)(ticketSpan.size(), static_cast<size_t>(origResp.returnValue()));
+                PipeManager::DenuvoAuth::SyncAppTicketToLua(appId, ticketSpan.data(), ticketSize);
             }
 
             PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
             return;
         }
 
-        if (!LuaConfig::HasDepot(appId)) return;
+        if (!LuaConfig::HasDepot(appId, false)) return;
 
         AppTicket::AppOwnershipTicket ticket{};
         // Refresh the Denuvo authorization lease window when an ownership ticket is requested.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
         
         AppTicket::AppTicketSource ticketSource;
-        if (PipeManager::DenuvoAuth::IsAuthorizedPipe(pipe)) {
-            ticketSource = AppTicket::AppTicketSource::CredentialStoreOnly;
+        if (PipeManager::DenuvoAuth::IsAuthorizedPipe(pipe) || PipeManager::DenuvoAuth::IsDenuvoPipe(pipe)) {
+            // For Denuvo processes, only accept genuine tickets from in-memory cache.
+            // Never fall back to local forged tickets (which carry the secondary account's
+            // SteamID and cause Denuvo cross-check Error 54).
+            ticketSource = AppTicket::AppTicketSource::MemoryOnly;
         } else {
-            // Outside the auth window: prefer credential-store ticket (pool SteamID)
-            // over ForgeOnly (which uses app 7's ticket and carries the real SteamID).
-            // When the 858 network spoof is also active, both paths must agree on the
-            // same SteamID or Denuvo cross-checks them and rejects (error 54).
-            LOG_IPC_DEBUG("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} not in authorization window, credential store preferred", appId);
-            ticketSource = AppTicket::AppTicketSource::CredentialStoreThenForge;
+            // Outside the auth window for non-Denuvo games: prefer memory-cached ticket
+            // over ForgeOnly.
+            LOG_IPC_DEBUG("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} not in authorization window, cached ticket preferred", appId);
+            ticketSource = AppTicket::AppTicketSource::MemoryThenForge;
         }        
         if (!AppTicket::GetAppOwnershipTicket(appId, ticket, ticketSource)) return;
 
@@ -142,7 +147,10 @@ namespace {
         if (!resp.ok()) return;
 
         AppId_t appId = Hooks_Misc::ResolveAppId();
-        if (appId == 0 || !LuaConfig::HasDepot(appId)) return;
+        if (appId == 0) {
+            appId = PipeManager::DenuvoAuth::GetAuthorizedAppId(pipe);
+        }
+        if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
         // Refresh the Denuvo authorization lease window when an encrypted ticket is requested.
         PipeManager::DenuvoAuth::OnTicketRequested(pipe, appId);
@@ -160,10 +168,10 @@ namespace {
             // belongs to (0 if none) — lets the backend pin the mint to that
             // SAME account instead of risking a different pool pick.
             const uint64_t existingSteamId = AppTicket::GetTicketSteamID(appId);
-            // Mint a fresh eticket whenever the credential store already has a ticket
+            // Mint a fresh eticket whenever the in-memory cache already has a ticket
             // for this app (existingSteamId != 0). The minted eticket is pinned to
             // the same pool account via existingSteamId, which matches GetSteamID's
-            // spoof (also sourced from the credential store via CredentialStoreThenForge)
+            // spoof (also sourced from the cache via MemoryThenForge)
             // — no error-54 risk. This fixes error 05 for games launched more than
             // 30 min after activation (stored ticket expired, fresh mint is current).
             if (!LuaConfig::IsOwned(appId) && existingSteamId != 0) {
@@ -180,7 +188,7 @@ namespace {
             haveFresh = g_freshEticket.find(appId) != g_freshEticket.end();
         }
 
-        std::vector<uint8_t> ticket = AppTicket::GetEncryptedTicketFromCredentialStore(appId);
+        std::vector<uint8_t> ticket = AppTicket::GetCachedEncryptedTicket(appId);
         if (ticket.empty() && !haveFresh) {
             LOG_IPC_DEBUG("RequestEncryptedAppTicket: AppId={} - no cached eticket, skip", appId);
             return;
@@ -196,6 +204,9 @@ namespace {
     void HandlerPost_IClientUser_GetEncryptedAppTicket(CPipeClient* pipe, CUtlBuffer* pRead, CUtlBuffer* pWrite)
     {
         AppId_t appId = Hooks_Misc::ResolveAppId();
+        if (appId == 0) {
+            appId = PipeManager::DenuvoAuth::GetAuthorizedAppId(pipe);
+        }
         if (appId == 0 || !LuaConfig::HasDepot(appId, false)) return;
 
         // Refresh the Denuvo authorization lease window when reading the encrypted ticket.
@@ -205,16 +216,8 @@ namespace {
         GetEncryptedAppTicketResp existingResp{pWrite};
         if (existingResp.ok() && existingResp.returnValue()) {
             auto ticketSpan = existingResp.pTicket();
-            if (!ticketSpan.empty()) {
+            if (!ticketSpan.empty() || existingResp.pcbTicket() > 0) {
                 LuaConfig::MarkOwned(appId);
-                PipeManager::DenuvoAuth::OnEncryptedTicketCaptured(appId, ticketSpan.data(), ticketSpan.size());
-                if (const auto active = PipeManager::DenuvoAuth::GetCurrentActiveSteamId(); active) {
-                    AppTicket::WriteSteamID(appId, *active);
-                    LOG_IPC_DEBUG("GetEncryptedAppTicket: genuine ticket for appId={}, persisted SteamID.txt: {}", appId, *active);
-                }
-                return;
-            } else if (existingResp.pcbTicket() > 0) {
-                // Buffer size inquiry (game passed nullptr or 0-length buffer)
                 return;
             }
         }
@@ -234,7 +237,7 @@ namespace {
         }
         const bool fromFresh = !ticket.empty();
         if (ticket.empty()) {
-            ticket = AppTicket::GetEncryptedTicketFromCredentialStore(appId);
+            ticket = AppTicket::GetCachedEncryptedTicket(appId);
         }
         if (ticket.empty()) {
             LOG_IPC_DEBUG("GetEncryptedAppTicket: AppId={} - no cached eticket, skip", appId);

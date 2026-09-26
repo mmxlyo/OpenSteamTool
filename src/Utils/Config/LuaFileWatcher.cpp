@@ -1,4 +1,3 @@
-#include "Hook/Hooks_Package.h"
 #include "Utils/Config/LuaFileWatcher.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
@@ -12,10 +11,12 @@
 #include <filesystem>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace LuaFileWatcher {
 namespace {
 
+std::atomic<LicenseChangedCallback> g_licenseChangedCb{nullptr};
 enum class ChangeAction {
     Added,
     Modified,
@@ -172,7 +173,9 @@ void ProcessChanges(const std::vector<FileChange>& changes) {
     }
 
     if (luaStateChanged) {
-        Hooks_Package::NotifyLicenseChanged();
+        if (auto cb = g_licenseChangedCb.load(std::memory_order_relaxed)) {
+            cb();
+        }
         CloudRedirectHost::SyncAppSet();
         LOG_PACKAGE_DEBUG("Lua refresh completed");
     }
@@ -266,6 +269,10 @@ void WatcherThread() {
 }
 
 } // namespace
+
+void SetLicenseChangedCallback(LicenseChangedCallback cb) {
+    g_licenseChangedCb.store(cb, std::memory_order_release);
+}
 
 void Start(const std::vector<std::string>& directories) {
     using OSTPlatform::Encoding::PathFromUtf8;

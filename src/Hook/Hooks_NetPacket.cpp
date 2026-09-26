@@ -5,9 +5,9 @@
 #include "dllmain.h"
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Tickets/EticketClient.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
-#include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -614,13 +614,12 @@ namespace Hooks_NetPacket_OwnershipTicket {
             return;
         }
 
-        // Steam already returned a valid ticket (account owns it) — capture & leave it.
+        // Steam already returned a valid ticket (account owns it) — sync to Lua if present.
         if (resp.eresult() == k_EResultOK) {
             if (resp.has_ticket() && !resp.ticket().empty()) {
-                PipeManager::DenuvoAuth::OnOwnershipTicketCaptured(
-                    resp.app_id(),
-                    reinterpret_cast<const uint8_t*>(resp.ticket().data()),
-                    resp.ticket().size());
+                const auto& t = resp.ticket();
+                PipeManager::DenuvoAuth::SyncAppTicketToLua(
+                    resp.app_id(), reinterpret_cast<const uint8_t*>(t.data()), t.size());
             }
             return;
         }
@@ -628,13 +627,13 @@ namespace Hooks_NetPacket_OwnershipTicket {
 
         const int32 origEresult = resp.eresult();
 
-        // Prefer the credential-store ticket when it is already valid: that
+        // Prefer the cached ticket when it is already valid: that
         // ensures GetAppOwnershipTicketExtendedData and the 858 response hand
         // Denuvo the identical bytes. Serving a different (backend-minted) ticket
         // here caused a cross-check mismatch → 012 even when the SteamID was the
-        // same account. Only mint from the backend when the credential store has
+        // same account. Only mint from the backend when the in-memory cache has
         // no valid ticket (existingSteamId == 0).
-        auto stored = AppTicket::GetAppOwnershipTicketFromCredentialStore(resp.app_id());
+        auto stored = AppTicket::GetCachedAppOwnershipTicket(resp.app_id());
         const uint64_t existingSteamId = AppTicket::ExtractSteamIdFromTicketBytes(stored);
 
         std::vector<uint8_t> ticketBytes;
