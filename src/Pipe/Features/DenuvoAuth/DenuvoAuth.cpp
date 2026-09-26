@@ -7,16 +7,9 @@
 #include "Pipe/ProcessInspector.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoSync.h"
 #include "OSTPlatform/include/Process.h"
-#include "OSTPlatform/include/Encoding.h"
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
 #include <algorithm>
 #include <chrono>
-#include <cwctype>
 #include <mutex>
-#include <optional>
 #include <string_view>
 #include <unordered_map>
 
@@ -25,87 +18,6 @@ namespace {
 
     constexpr std::chrono::milliseconds kStartupGraceDuration{2500};
     constexpr std::chrono::milliseconds kTicketLeaseDuration{3000};
-
-    bool EqualsUniverseName(std::wstring_view lhs, std::wstring_view rhs) {
-        if (lhs.size() != rhs.size()) return false;
-
-        for (size_t i = 0; i < lhs.size(); ++i) {
-            if (std::towlower(lhs[i]) != std::towlower(rhs[i])) return false;
-        }
-
-        return true;
-    }
-
-    EUniverse ParseUniverse(std::wstring_view universe) {
-        if (EqualsUniverseName(universe, L"Public")) return k_EUniversePublic;
-        if (EqualsUniverseName(universe, L"Beta")) return k_EUniverseBeta;
-        if (EqualsUniverseName(universe, L"Internal")) return k_EUniverseInternal;
-        if (EqualsUniverseName(universe, L"Dev")) return k_EUniverseDev;
-        return k_EUniverseInvalid;
-    }
-
-    bool ReadActiveSteamUser(uint32_t& accountId, std::wstring& universe) {
-        constexpr const wchar_t* kActiveProcessKeyPath = L"Software\\Valve\\Steam\\ActiveProcess";
-        constexpr const wchar_t* kValueActiveUser = L"ActiveUser";
-        constexpr const wchar_t* kValueUniverse = L"Universe";
-
-        DWORD activeUser = 0;
-        DWORD bytes = sizeof(activeUser);
-        LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, kActiveProcessKeyPath, kValueActiveUser,
-                                      RRF_RT_REG_DWORD, nullptr, &activeUser, &bytes);
-        if (status != ERROR_SUCCESS || bytes != sizeof(activeUser) || activeUser == 0) {
-            return false;
-        }
-
-        bytes = 0;
-        status = RegGetValueW(HKEY_CURRENT_USER, kActiveProcessKeyPath, kValueUniverse,
-                              RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
-        if (status != ERROR_SUCCESS || bytes < sizeof(wchar_t)) {
-            return false;
-        }
-
-        std::wstring universeBuf(bytes / sizeof(wchar_t), L'\0');
-        status = RegGetValueW(HKEY_CURRENT_USER, kActiveProcessKeyPath, kValueUniverse,
-                              RRF_RT_REG_SZ, nullptr, universeBuf.data(), &bytes);
-        if (status != ERROR_SUCCESS) {
-            return false;
-        }
-
-        while (!universeBuf.empty() && universeBuf.back() == L'\0') {
-            universeBuf.pop_back();
-        }
-        if (universeBuf.empty()) {
-            return false;
-        }
-
-        accountId = activeUser;
-        universe = std::move(universeBuf);
-        return true;
-    }
-
-} // namespace
-
-    std::optional<uint64> GetCurrentActiveSteamId() {
-        uint32 accountId = 0;
-        std::wstring universeName;
-        if (!ReadActiveSteamUser(accountId, universeName)) {
-            LOG_PIPE_WARN("DenuvoAuth: active Steam user unavailable from registry");
-            return std::nullopt;
-        }
-
-        EUniverse universe = ParseUniverse(universeName);
-        if (universe == k_EUniverseInvalid) {
-            LOG_PIPE_WARN("DenuvoAuth: active Steam user has unrecognized universe '{}', defaulting to Public",
-                           OSTPlatform::Encoding::WideToUtf8(universeName));
-            universe = k_EUniversePublic;
-        }
-
-        CSteamID steamId;
-        steamId.Set(accountId, universe, k_EAccountTypeIndividual);
-        return steamId.ConvertToUint64();
-    }
-
-namespace {
 
     struct ProcessAuth {
         bool scanned = false;
