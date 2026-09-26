@@ -888,11 +888,12 @@ bool SyncAppTicketToLua(AppId_t appId, const uint8_t* pTicketData, size_t ticket
             LOG_ERROR("DenuvoSync: failed to write updated Lua file {}", luaPath.string());
             return false;
         }
+        // Reload Lua config only when the file content was actually modified
+        LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaPath));
     }
 
-    // Always store ticket in memory and reload Lua config
+    // Always store ticket in memory
     AppTicket::WriteAppOwnershipTicket(appId, std::vector<uint8_t>(pTicketData, pTicketData + ticketSize));
-    LuaConfig::ParseFile(OSTPlatform::Encoding::PathToUtf8(luaPath));
     return true;
 }
 
