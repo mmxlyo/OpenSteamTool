@@ -931,7 +931,7 @@ namespace
 
 namespace Hooks_SteamUI
 {
-    void Install()
+    void InstallBootstrap()
     {
         ARM_CAPTURE_U(GetAppByID);
         ARM_CAPTURE_U(MarkAppChange);
@@ -940,9 +940,6 @@ namespace Hooks_SteamUI
 
         HOOK_BEGIN();
         INSTALL_HOOK_U(LoadModuleWithPath);
-        INSTALL_HOOK_U(FillInAppOverview);
-        INSTALL_HOOK_U(BuildCompleteAppOverviewChange);
-        INSTALL_HOOK_U(CSteamUIAppControllerRunFrame);
 
         // System module handle redirection for Diversion shadow memory isolation
         if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleA), reinterpret_cast<void*>(hkGetModuleHandleA))) _ost_detour_transaction_ok_ = false;
@@ -950,6 +947,15 @@ namespace Hooks_SteamUI
         if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExA), reinterpret_cast<void*>(hkGetModuleHandleExA))) _ost_detour_transaction_ok_ = false;
         if (!OSTPlatform::Detour::Attach(reinterpret_cast<void**>(&oGetModuleHandleExW), reinterpret_cast<void*>(hkGetModuleHandleExW))) _ost_detour_transaction_ok_ = false;
 
+        HOOK_END();
+    }
+
+    void Install()
+    {
+        HOOK_BEGIN();
+        INSTALL_HOOK_U(FillInAppOverview);
+        INSTALL_HOOK_U(BuildCompleteAppOverviewChange);
+        INSTALL_HOOK_U(CSteamUIAppControllerRunFrame);
         HOOK_END();
 
         g_trackedStates.reserve(1500);

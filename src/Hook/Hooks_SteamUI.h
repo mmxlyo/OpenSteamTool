@@ -5,6 +5,7 @@
 // Hooks targeting steamui.dll:
 
 namespace Hooks_SteamUI {
+    void InstallBootstrap();
     void Install();
     void Uninstall();
     void DetachWorkerThreads();

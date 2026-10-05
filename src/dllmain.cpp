@@ -191,9 +191,10 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     PatternLoader::Load(ui_hModule, SteamUIPath, "steamui");
     PatternLoader::Load(client_hModule, SteamclientPath, "steamclient");
 
-    // Install SteamUI hooks early so LoadModuleWithPath can intercept
-    // and synchronize with client hook installation.
-    HookManager::InstallUIHooks();
+    // Install only the bootstrap hooks that must exist before Steam can load
+    // steamclient64.dll. Lua-dependent SteamUI hooks are installed after the
+    // initial Lua configuration has been parsed.
+    HookManager::InstallUIBootstrap();
 
     // IPC method metadata (funcHash, fencepost, argc, ...)
     IPCLoader::Load(SteamclientPath);
@@ -223,6 +224,11 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     for (const auto& dir : watchDirs)
         LuaConfig::ParseDirectory(dir);
+
+    // FillInAppOverview and the library update hooks read LuaConfig state.
+    // Install them only after the initial parse so SteamUI cannot observe an
+    // empty configuration during startup.
+    HookManager::InstallUIHooks();
 
     // Awaken installed scanner to immediately form installed snapshot with loaded Lua configs
     Hooks_SteamUI::TriggerInstalledScanner();

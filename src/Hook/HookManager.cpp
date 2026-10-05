@@ -10,6 +10,10 @@
 
 namespace HookManager {
 
+    void InstallUIBootstrap() {
+        Hooks_SteamUI::InstallBootstrap();
+    }
+
     void InstallUIHooks() {
         Hooks_SteamUI::Install();
     }
