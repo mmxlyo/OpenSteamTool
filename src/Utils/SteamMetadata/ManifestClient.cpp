@@ -5,10 +5,12 @@
 #include "Utils/Logging/Log.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <charconv>
+#include <chrono>
+#include <mutex>
 #include <string_view>
+#include <unordered_map>
 
 namespace ManifestClient {
 
@@ -66,21 +68,53 @@ namespace ManifestClient {
         Make("steamrun",      "https://manifest.steam.run/api/manifest/%llu",  ParseSteamRunJson),
     };
 
-    static std::atomic<const Provider*> g_active{&kProviders[0]};   // manifestdex
+    static const Provider* g_configured = &kProviders[0];   // manifestdex
+    static std::mutex g_stateMutex;
+
+    static constexpr size_t kProviderCount = sizeof(kProviders) / sizeof(kProviders[0]);
+    static constexpr auto kProviderCooldown = std::chrono::seconds(60);
+    static constexpr auto kRepeatRetryMinAge = std::chrono::seconds(2);
+    static constexpr auto kRepeatRetryWindow = std::chrono::seconds(90);
+    static constexpr auto kAttemptStateTtl = std::chrono::minutes(5);
+    static std::chrono::steady_clock::time_point g_cooldown[kProviderCount];
+    static uint64_t g_okSeq[kProviderCount] = {};
+
+    struct ManifestKey {
+        uint64_t gid;
+        uint32_t depotId;
+
+        bool operator==(const ManifestKey&) const = default;
+    };
+
+    struct ManifestKeyHash {
+        size_t operator()(const ManifestKey& key) const noexcept {
+            const size_t h1 = std::hash<uint64_t>{}(key.gid);
+            const size_t h2 = std::hash<uint32_t>{}(key.depotId);
+            return h1 ^ (h2 + 0x9e3779b9u + (h1 << 6) + (h1 >> 2));
+        }
+    };
+
+    struct ProviderAttemptState {
+        size_t providerIndex;
+        std::chrono::steady_clock::time_point servedAt;
+    };
+
+    static std::unordered_map<ManifestKey, ProviderAttemptState, ManifestKeyHash> g_lastServed;
 
     bool SetProvider(std::string_view name) {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
         for (const auto& p : kProviders) {
-            if (p.name == name) { 
-                g_active.store(&p, std::memory_order_release); 
-                return true; 
+            if (p.name == name) {
+                g_configured = &p;
+                return true;
             }
         }
         return false;
     }
 
     std::string_view ActiveProviderName() {
-        const auto* p = g_active.load(std::memory_order_acquire);
-        return p ? p->name : ""; 
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        return g_configured ? g_configured->name : "";
     }
 
     // ── request ───────────────────────────────────────────────────
@@ -90,10 +124,7 @@ namespace ManifestClient {
 
     // ── fetch ─────────────────────────────────────────────────────
 
-    static bool FetchActive(uint64_t gid, uint64_t* outCode) {
-        const auto* active = g_active.load(std::memory_order_acquire);
-        if (!active) return false;
-        const Provider& p = *active;
+    static bool FetchProvider(const Provider& p, uint64_t gid, uint64_t* outCode) {
         const Config::ManifestTimeouts timeouts = Config::GetManifestTimeouts();
 
         char urlLog[256];
@@ -114,6 +145,76 @@ namespace ManifestClient {
 
         if (!r.ok || r.status != 200) return false;
         return p.parse(r.body, outCode);
+    }
+
+    static bool FetchWithFallback(uint64_t gid, uint64_t depotId, uint64_t* outCode) {
+        size_t start = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            const auto now = std::chrono::steady_clock::now();
+
+            for (auto it = g_lastServed.begin(); it != g_lastServed.end();) {
+                if (now - it->second.servedAt > kAttemptStateTtl) {
+                    it = g_lastServed.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            const ManifestKey key{gid, static_cast<uint32_t>(depotId)};
+            const auto previous = g_lastServed.find(key);
+            if (previous != g_lastServed.end()) {
+                const auto age = now - previous->second.servedAt;
+                if (age >= kRepeatRetryMinAge && age <= kRepeatRetryWindow) {
+                    start = (previous->second.providerIndex + 1) % kProviderCount;
+                    LOG_MANIFEST_INFO(
+                        "Manifest repeat request depot={} gid={}: previous provider={} age_ms={} -> start={}",
+                        depotId,
+                        gid,
+                        kProviders[previous->second.providerIndex].name,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(age).count(),
+                        kProviders[start].name);
+                } else if (g_configured) {
+                    start = static_cast<size_t>(g_configured - kProviders);
+                }
+            } else if (g_configured) {
+                start = static_cast<size_t>(g_configured - kProviders);
+            }
+        }
+
+        for (size_t n = 0; n < kProviderCount; ++n) {
+            const size_t i = (start + n) % kProviderCount;
+            uint64_t seq = 0;
+
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                const auto now = std::chrono::steady_clock::now();
+                if (g_cooldown[i] > now) {
+                    LOG_MANIFEST_DEBUG("Skip cooling provider {}", kProviders[i].name);
+                    continue;
+                }
+                seq = g_okSeq[i];
+            }
+
+            if (FetchProvider(kProviders[i], gid, outCode)) {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                ++g_okSeq[i];
+                g_cooldown[i] = {};
+                g_lastServed[ManifestKey{gid, static_cast<uint32_t>(depotId)}] = {
+                    i,
+                    std::chrono::steady_clock::now()
+                };
+                return true;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                if (g_okSeq[i] == seq) {
+                    g_cooldown[i] = std::chrono::steady_clock::now() + kProviderCooldown;
+                }
+            }
+        }
+        return false;
     }
 
     // ── public ────────────────────────────────────────────────────
@@ -137,6 +238,6 @@ namespace ManifestClient {
             LOG_MANIFEST_WARN("Manifest gid={} lua returned nil, falling back to config", manifestGid);
         }
 
-        return FetchActive(manifestGid, outRequestCode);
+        return FetchWithFallback(manifestGid, depotId, outRequestCode);
     }
 }

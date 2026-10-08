@@ -16,6 +16,8 @@ level = "debug"
 #   "opensteamtool" → https://manifest.opensteamtool.com/{gid}
 #   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recomendado para usuarios en China)
 #   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
+# Si falla el proveedor seleccionado, se prueban los demás proveedores integrados
+# en orden. Los fallidos entran en espera 60 s; el respaldo no cambia la preferencia configurada.
 # Si <Steam>/config/lua/manifest.lua define fetch_manifest_code(gid) o
 # fetch_manifest_code_ex(app_id, depot_id, gid), dichas funciones Lua tendrán
 # prioridad sobre el ajuste url inferior.

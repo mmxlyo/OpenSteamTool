@@ -141,7 +141,9 @@ level = "info"
 # dir = "opensteamtool"
 
 [manifest]
-# Upstream API: "manifestdex" (default), "opensteamtool", "steamrun", "wudrm"
+# Upstream API: "manifestdex" (default), "opensteamtool", "wudrm", "steamrun"
+# Built-in providers automatically fall back on failure; failed providers cool down for 60 seconds.
+# The configured provider remains preferred for new manifest requests.
 url = "manifestdex"
 timeout_resolve_ms = 5000
 timeout_connect_ms = 5000

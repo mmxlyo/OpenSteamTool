@@ -141,7 +141,8 @@ level = "info"
 # dir = "opensteamtool"
 
 [manifest]
-# 上游 API："manifestdex"（默认）、"opensteamtool"、"steamrun"、"wudrm"
+# 上游 API："manifestdex"（默认）、"opensteamtool"、"wudrm"、"steamrun"
+# 内置源失败时自动回退；失败源冷却 60 秒；新的 manifest 请求仍优先使用配置源。
 url = "manifestdex"
 timeout_resolve_ms = 5000
 timeout_connect_ms = 5000

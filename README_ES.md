@@ -141,7 +141,9 @@ level = "info"
 # dir = "opensteamtool"
 
 [manifest]
-# API ascendente: "manifestdex" (predeterminado), "opensteamtool", "steamrun", "wudrm"
+# API ascendente: "manifestdex" (predeterminado), "opensteamtool", "wudrm", "steamrun"
+# Los proveedores integrados usan respaldo automático; los fallidos esperan 60 s.
+# El proveedor configurado sigue siendo el preferido para nuevos manifiestos.
 url = "manifestdex"
 timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
